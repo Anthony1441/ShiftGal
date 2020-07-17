@@ -78,9 +78,6 @@ def filter_stars(src, trg, min_perc_spread_agreement = 0.8, max_star_spread = 4,
             temp_src.append(src[i])
             temp_trg.append(trg[i])
         
-        else:
-            print 'SPREADS DONT MATCH | SRC:', src[i], src[i].x_spread, src[i].y_spread, '| TRG:', trg[i], trg[i].x_spread, trg[i].y_spread
-
     src, trg = temp_src, temp_trg
     assert len(src) == len(trg)
 
@@ -128,20 +125,18 @@ def average_vector(m_src, m_trg, maxsigma = 1):
 
 def shift_img(gal, vector):
     """shifts the image by the 2D vector given"""
-
+    
     # shift the integer part of the x-axis
     gal = np.roll(gal, int(vector[0]), axis = 1)
     # shift over the decimal part
     x_rem = vector[0] % int(vector[0]) if abs(vector[0]) >= 1 else vector[0] + abs(int(vector[0]))
     x_shift = np.roll(gal, int(np.sign(x_rem)), axis = 1)
-    print vector, x_rem, int(np.sign(x_rem))
     gal = gal - abs(x_rem) * gal + abs(x_rem) * x_shift
 
     # shift along y-axis
     gal = np.roll(gal, int(vector[1]), axis = 0)
     y_rem = vector[1] % int(vector[1]) if abs(vector[1]) >= 1 else vector[1] + abs(int(vector[1]))
     y_shift = np.roll(gal, int(np.sign(y_rem)), axis = 0)
-    print vector, y_rem, int(np.sign(y_rem))
     gal = gal - abs(y_rem) * gal + abs(y_rem) * y_shift
 
     return gal
@@ -211,7 +206,7 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
         
             # if no points in it match the template, skip it
             if len(m_src) < min_stars_all:
-                prints('Skipping waveband {} it does not have enough viable stars to use for realignment'.format(color), output, save_output)
+                prints('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)), output, save_output)
                 continue
 
             fit_src, fit_stars = [], []
@@ -230,7 +225,7 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
 
             # if less than the min stars were fit then skip this waveband
             if len(fit_stars) < min_stars_all:
-                prints('Skipping waveband {}, not enough stars could be fit'.format(color), output, save_output)
+                prints('Skipping waveband {}, not enough stars could be fit ({} stars)'.format(color, len(fit_stars)), output, save_output)
                 continue
 
             # calculate the average vector from the reference image and this image
@@ -242,31 +237,24 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
         
         # END IF
 
-        # shift the image over the average vector, padding it so that no information is lost on the edges
-        
-        fill_value = np.min(img)
-
-        padded_img = np.pad(img, int(len(img) * 0.1), 'constant', constant_values = fill_value) if include_border else img
-        shifted_img = shift_img(padded_img, vector)
-
-        padded_img[padded_img < fill_value] = fill_value
-        shifted_img[shifted_img < fill_value] = fill_value
         prints('Shifted waveband {} by vector {} using {} stars'.format(color, tuple(vector), len(fit_stars)), output, save_output)
 
         def save_png():
-            threshold = np.min(img) + (np.max(img) - np.min(img)) * 0.1
-            
-            if save_inputs: 
-                _padded_img = np.copy(padded_img)
-                _padded_img[_padded_img > threshold] = threshold
-                plt.imsave(p + '/inputs/' + galaxy.name + '_' + color + '.png', _padded_img, cmap = 'gray')
-            
-            _shifted_img = np.copy(shifted_img)
-            _shifted_img[_shifted_img > threshold] = threshold
-            plt.imsave(p + '/' + galaxy.name + '_' + color + '.png', _shifted_img, cmap = 'gray')
+            padded_img = np.pad(img - np.min(img), int(len(img) * 0.1), 'constant') if include_border else img
+            thres = np.max(padded_img) * 0.5
+            #padded_img[padded_img > thres] = thres
+            #print np.min(padded_img), np.max(padded_img)
+            shifted_img = shift_img(padded_img, vector)
+            #shifted_img[shifted_img > thres] = thres
+
+            if save_inputs: plt.imsave(p + '/inputs/' + galaxy.name + '_' + color + '.png', padded_img, cmap = 'gray')
+            plt.imsave(p + '/' + galaxy.name + '_' + color + '.png', shifted_img, cmap = 'gray')
        
 
         def save_fits():
+            padded_img = np.pad(img, int(len(img) * 0.1), 'constant') if include_border else img
+            shifted_img = shift_img(padded_img, vector)
+
             # copy the header info from the original image into the new fits file
             f = galaxy.gal_dict[color]
             w = wcs.WCS(f[0].header, fix = False)
@@ -286,8 +274,8 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
             save_fits()
 
         elif out_type == 'both':
-            save_png()
             save_fits()
+            save_png()
         
         if save_points:
             # save the image with points (as png)
@@ -304,7 +292,7 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
 
 if __name__ == '__main__':
     
-    # get all of the arguments / options
+    # get all of the arguments / option
     parser = argparse.ArgumentParser()
     parser.add_argument('in_dir', help = 'A directory containing the input galaxies, see -in_format for how this should be structured.')
     parser.add_argument('out_dir', help = 'A directory for the output images.  If it does not exist then it will be created, if it already exists then all files in it will be deleted.')
@@ -312,14 +300,13 @@ if __name__ == '__main__':
     parser.add_argument('-include_border', default = 'True', choices = ['True', 'False', 'true', 'false', '0', '1'], help = 'Controls if the output images will include a black border around them so that no information in the image is lost in the shift.  Default is true.')
     parser.add_argument('-sub_dir', default = None, help = 'If -in_format is "SDSS" then this controls which sub directory of galaxies is processed, if not set then all galaxies are processed.  If in SDSS format but does not contain sub directories set this to "no_sub_dir".  If in_format is "separate" then this option is ignored.')
     parser.add_argument('-in_format', default = 'separate', choices = ['SDSS', 'separate'], help = 'Sets the file structure that the input galaxies will follow.  If "SDSS" then it expects in_dir to contain 5 wavebands labeled "g", "i", "r", "u", and "z", where in each waveband directory there can either be sub-directories (i.e. 000, 001...) with galaxy files in them or the galaxy files can be in the waveband directories directly.  If "separate" then in_dir should contain one directory for each galaxy and each one of those should have fits images labeled g.fits, r.fits, etc...')
-    parser.add_argument('-save_type', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.')
+    parser.add_argument('-save_type', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
     parser.add_argument('-template', default = 'max_stars', choices = ['max_stars', 'max_contrast'], help = 'Controls how the template galaxy (the one that the other wavebands will be shifted to match) is chosen.  If "max_stars" then the waveband with the most stars is chosen.  If "max_contrast" then the waveband with the highest contrast is chosen.  Default is "max_stars".')  
     parser.add_argument('-min_stars_template', default = 5, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
     parser.add_argument('-min_stars_all', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
     parser.add_argument('-save_inputs', default = 'False', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the input images are saved as part of the output.  Default is false.')
     parser.add_argument('-save_points', default = 'False', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Controls if an image with the sextractor and fitted points if saved as part of the output.  Default is false.')
-    parser.add_argument('-save_output', default = 'True', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then a txt file is saved with the displayed output for each galaxy.')
-    parser.add_argument('-verbose_output', default = 'True', choices = ['True', 'False', 'true', 'false', '0', '1'], help = 'If True output for each star is shown along with other error messages, if False only the galaxy names are outputted.  Default is True') 
+    parser.add_argument('-save_output_info', default = 'True', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then a txt file is saved with the displayed output for each galaxy.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -350,10 +337,9 @@ if __name__ == '__main__':
 
     t = ('True', 'true', '1')
     args.include_border = True if args.include_border in t else False
-    args.verbose_output = True if args.verbose_output in t else False
     args.save_inputs = True if args.save_inputs in t else False
     args.save_points = True if args.save_points in t else False
-    args.save_output = True if args.save_output in t else False
+    args.save_output_info = True if args.save_output_info in t else False
 
     if not os.path.exists('temp_fits'): os.mkdir('temp_fits')
     
@@ -363,10 +349,10 @@ if __name__ == '__main__':
         galgen = load_gals.load_galaxies_SDSS(args.in_dir, args.sub_dir, args.star_class_perc) if args.in_format == 'SDSS' else load_gals.load_galaxies_separate(args.in_dir, args.star_class_perc)
         for gal in galgen:
             if gal is None: continue
-            process_galaxy(gal, args.out_dir, args.include_border, args.save_type, args.template, args.min_stars_template, args.min_stars_all, args.save_inputs, args.save_points, args.save_output)
+            process_galaxy(gal, args.out_dir, args.include_border, args.save_type, args.template, args.min_stars_template, args.min_stars_all, args.save_inputs, args.save_points, args.save_output_info)
             print
 
-    except Exception as e:    
+    except ValueError as e:    
         raise e
 
     finally:

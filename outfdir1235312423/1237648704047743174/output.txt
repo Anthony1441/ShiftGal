@@ -1,0 +1,8 @@
+--- Processing galaxy 1237648704047743174 ---
+Reference waveband chosen is i
+Number of stars in reference waveband 4
+Skipping waveband g, not enough stars could be fit (1 stars)
+Shifted waveband i by vector (0, 0) using 4 stars
+Skipping waveband r, not enough stars could be fit (0 stars)
+Skipping waveband u it does not have enough viable stars to use for realignment (1 stars)
+Skipping waveband z, not enough stars could be fit (1 stars)
