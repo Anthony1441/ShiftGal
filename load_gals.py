@@ -123,30 +123,41 @@ def load_galaxies_SDSS(in_dir, sub_dir, star_class_perc):
         for gal in yield_gals(sub_dir): yield gal
 
 
+def load_galaxy_separate(galpath, star_class_perc):
+     
+    gal_dict = OrderedDict()
+    galname = os.path.basename(galpath)
+    for color in colors:
+        p = os.path.join(galpath, color + '.fits')
+        if os.path.exists(p):
+            gal_dict.update({color: fits.open(p, ignore_missing_end = True)})
+        else:
+            p2 = os.path.join(galpath, galname + '_' + color + '.fits')
+            if os.path.exists(p2):
+                gal_dict.update({color: fits.open(p2, ignore_missing_end = True)})
+        
+    # if no images were found
+    if not gal_dict: return None
+        
+    # find the stars in the galaxies
+    star_dict = OrderedDict()
+    for color in gal_dict.keys():
+        p = os.path.join(galpath, color + '.fits')
+        if os.path.exists(p):
+            star_dict.update({color: get_sextractor_points(p, star_class_perc)})
+        else:
+            p = os.path.join(galpath, galname + '_' + color + '.fits')
+            star_dict.update({color: get_sextractor_points(p, star_class_perc)})
+
+    return Galaxy(gal_dict, star_dict, galname)
+
+
+
+
 def load_galaxies_separate(in_dir, star_class_perc):
     """Generator that yields galaxy objects for each galaxy in in_dir.  This assumes
        that in_dir exists and that the the directory structure follows what is expected."""
 
     for galname in os.listdir(in_dir):
-        
-        gal_dict = OrderedDict()
-
-        for color in colors:
-            p = os.path.join(in_dir, galname, color + '.fits')
-            if os.path.exists(p):
-                gal_dict.update({color: fits.open(p, ignore_missing_end = True)})
-    
-        # if no images were found
-        if not gal_dict: yield None
-        
-        # find the stars in the galaxies
-        star_dict = OrderedDict()
-        for color in gal_dict.keys():
-            p = os.path.join(in_dir, galname, color + '.fits')
-            star_dict.update({color: get_sextractor_points(p, star_class_perc)})
-
-        yield Galaxy(gal_dict, star_dict, galname)
-
-
-
-
+        yield load_galaxy_separate(os.path.join(in_dir, galname), star_class_perc)
+     

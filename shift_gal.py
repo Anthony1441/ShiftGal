@@ -12,7 +12,7 @@ import sys
 import load_gals
 import find_center
 import random
-
+import star_residual
 
 class StarsNotWithinSigmaError(Exception): pass
 
@@ -148,7 +148,7 @@ def prints(line, f, save_output):
     if save_output: f.write(line + '\n')
 
 
-def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_stars_template, min_stars_all, save_inputs, save_points, save_output):
+def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_stars_template, min_stars_all, save_inputs, save_points, save_output, save_star_residuals, star_class_perc):
  
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
@@ -159,9 +159,10 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
         os.mkdir(p)
     
     output = None 
-    if save_inputs: os.mkdir(p + '/inputs')
-    if save_points: os.mkdir(p + '/points')
-    if save_output: output = open('{}/output.txt'.format(p), 'w')
+    if save_inputs: os.mkdir(os.path.join(p, 'inputs'))
+    if save_points: os.mkdir(os.path.join(p, 'points'))
+    if save_output: output = open(os.path.join(p, 'output.txt'), 'w')
+    if save_star_residuals: os.mkdir(os.path.join(p, 'residuals'))
 
     prints('--- Processing galaxy {} ---'.format(galaxy.name), output, save_output)
      
@@ -241,14 +242,13 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
 
         def save_png():
             padded_img = np.pad(img - np.min(img), int(len(img) * 0.1), 'constant') if include_border else img
-            thres = np.max(padded_img) * 0.5
-            #padded_img[padded_img > thres] = thres
-            #print np.min(padded_img), np.max(padded_img)
+            thres = np.max(padded_img) * 0.015
+            padded_img[padded_img > thres] = thres
             shifted_img = shift_img(padded_img, vector)
-            #shifted_img[shifted_img > thres] = thres
+            shifted_img[shifted_img > thres] = thres
 
-            if save_inputs: plt.imsave(p + '/inputs/' + galaxy.name + '_' + color + '.png', padded_img, cmap = 'gray')
-            plt.imsave(p + '/' + galaxy.name + '_' + color + '.png', shifted_img, cmap = 'gray')
+            if save_inputs: plt.imsave(os.path.join(p, 'inputs', galaxy.name + '_' + color + '.png'), padded_img, cmap = 'gray')
+            plt.imsave(os.path.join(p,  galaxy.name + '_' + color + '.png'), shifted_img, cmap = 'gray')
        
 
         def save_fits():
@@ -263,8 +263,8 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
             nf.header = f[0].header
             nf.header.update(w.to_header())
             hdu = fits.HDUList([nf])
-            hdu.writeto(p + '/' + galaxy.name + '_' + color + '.fits')
-            if save_inputs: f.writeto(p + '/inputs/' + galaxy.name + '_' + color + '.fits')
+            hdu.writeto(os.path.join(p,  galaxy.name + '_' + color + '.fits'))
+            if save_inputs: f.writeto(os.path.join(p, 'inputs', galaxy.name + '_' + color + '.fits'))
         
 
         if out_type == 'png':
@@ -280,15 +280,19 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
         if save_points:
             # save the image with points (as png)
             plt.figure()
+            img = img - np.min(img)
+            thres = np.max(img) * 0.015
+            img[img > thres] = thres
             plt.imshow(img, cmap = 'gray')
             m_x, m_y = [s.x for s in m_src], [s.y for s in m_src]
             plt.scatter(m_x, m_y, s = 2, color = 'blue')
             f_x, f_y = [s.x for s in fit_stars], [s.y for s in fit_stars]
             plt.scatter(f_x, f_y, s = 2, color = 'red')
-            plt.savefig(p + '/points/' + galaxy.name + '_' + color + '.png')
+            plt.savefig(os.path.join(p, 'points', galaxy.name + '_' + color + '.png'))
     
     if save_output: output.close()
-
+    
+    if save_star_residuals: star_residual.calc_residuals(p, os.path.join(p, 'residuals'), star_class_perc)
 
 if __name__ == '__main__':
     
@@ -307,6 +311,7 @@ if __name__ == '__main__':
     parser.add_argument('-save_inputs', default = 'False', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the input images are saved as part of the output.  Default is false.')
     parser.add_argument('-save_points', default = 'False', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Controls if an image with the sextractor and fitted points if saved as part of the output.  Default is false.')
     parser.add_argument('-save_output_info', default = 'True', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then a txt file is saved with the displayed output for each galaxy.')
+    parser.add_argument('-save_star_residuals', default = 'True', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves images comparing each star in to the same star in each waveband, this should be used to show that the stars are correctly cetnered.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -340,6 +345,7 @@ if __name__ == '__main__':
     args.save_inputs = True if args.save_inputs in t else False
     args.save_points = True if args.save_points in t else False
     args.save_output_info = True if args.save_output_info in t else False
+    args.save_star_residuals = True if args.save_star_residuals in t else False
 
     if not os.path.exists('temp_fits'): os.mkdir('temp_fits')
     
@@ -349,10 +355,10 @@ if __name__ == '__main__':
         galgen = load_gals.load_galaxies_SDSS(args.in_dir, args.sub_dir, args.star_class_perc) if args.in_format == 'SDSS' else load_gals.load_galaxies_separate(args.in_dir, args.star_class_perc)
         for gal in galgen:
             if gal is None: continue
-            process_galaxy(gal, args.out_dir, args.include_border, args.save_type, args.template, args.min_stars_template, args.min_stars_all, args.save_inputs, args.save_points, args.save_output_info)
+            process_galaxy(gal, args.out_dir, args.include_border, args.save_type, args.template, args.min_stars_template, args.min_stars_all, args.save_inputs, args.save_points, args.save_output_info, args.save_star_residuals, args.star_class_perc)
             print
 
-    except ValueError as e:    
+    except IndexError as e:    
         raise e
 
     finally:

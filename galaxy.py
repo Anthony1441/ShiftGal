@@ -50,6 +50,9 @@ class Galaxy:
             yield (color, gal[0].data, stars)   
 
 
+    def colors(self):
+        return self.gal_dict.keys()
+
 class Star:
 
     def __init__(self, x, y, class_prob = None, weight = None, x_spread = None, y_spread = None):
