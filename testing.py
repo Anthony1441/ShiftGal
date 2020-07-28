@@ -1,120 +1,147 @@
-import numpy as np
-import find_center
 from astropy.io import fits
-from astropy import wcs
-import shift_gal
-import load_gals
-import os
-import glob
 import matplotlib
-matplotlib.use('agg')
+matplotlib.use('agg') # needed for openlab
 import matplotlib.pyplot as plt
-import sys
+import numpy as np
+import os
+import shutil
+import find_center
+import shift_gal
+import copy
 
-def load_gal_and_stars(path):
-    gal = fits.open(path, ignore_missing_end = True)
-    stars = load_gals.get_sextractor_points(path, 0.7)
-    return gal, stars
+def test_smearing(galpath, outdir, vector = (0.5, 0.5), cycles = 1000):
+    """Shifts the galaxies in galpath back and forth to create a smearing effect"""
 
+    if not os.path.exists(galpath):
+        print '{} is not a valid directory'.format(galpath)
+        return
 
-def num_stars(path):
-    return len(load_gal_and_stars(path)[1][0])
-
-
-def test_shift(path, vector):
-    
-    gal, stars = load_gal_and_stars(path)
-    img = gal[0].data
-    # add a border to the image and load the points
-    pad_amt = int(len(img) * 0.1)
-    img = np.pad(img, pad_amt, 'constant')
-    stars[0] += pad_amt
-    stars[1] += pad_amt
-
-    shift_img = shift_gal.shift_img(img, vector)
-    shift_stars = np.copy(stars)
-    shift_stars[0] += int(vector[0] + 0.5)
-    shift_stars[1] += int(vector[1] + 0.5)
-
-    # estimate the points for both images
-    gal_center_x, gal_center_y = [], []
-    
-    for i in range(len(stars[0])):
-        try:
-            sx, sy = find_center.estimate_center(img, (stars[0][i], stars[1][i]))
-            gal_center_x.append(sx)
-            gal_center_y.append(sy)
-            #print '{} -> {}'.format((stars[0][i], stars[1][i]), (sx, sy))
-        
-        except:
-            pass
-     
-    shiftgal_center_x, shiftgal_center_y = [], []
-    
-    for i in range(len(shift_stars[0])):
-        try:
-            sx, sy = find_center.estimate_center(shift_img, (shift_stars[0][i], shift_stars[1][i]))
-            shiftgal_center_x.append(sx)
-            shiftgal_center_y.append(sy)
-            #print '{} -> {}'.format((shift_stars[0][i], shift_stars[1][i]), (sx, sy))
-
-        except:
-            pass
-
-    x1, y1, x2, y2 = shift_gal.find_like_points(gal_center_x, gal_center_y, shiftgal_center_x, shiftgal_center_y)
-    vector = np.array(vector)
-    est_vec = np.array(shift_gal.average_vector(x1, y1, x2, y2)) * -1
-    #print 'Actual vector {}, estimated vector {}, difference {}'.format(vector, est_vec, vector - est_vec)
-    return np.abs(vector - est_vec)
-
-
-
-
-'''
-sum_diff = np.array([0.0, 0.0])
-
-for i in np.arange(0, 1.01, 0.01):
-    sum_diff += test_shift('./galaxies/diff_crops_test/c0.fits', (i, 0))
-
-print 'Result:', sum_diff / len(np.arange(0, 1.01, 0.01))
-
-
-for i in np.arange(0, 1.1, 0.1):
-    test_shift('./galaxies/diff_crops_test/c0.fits', (0, i))
-'''
-
-names = []
-nums = []
-dists = []
-r = np.arange(0, 5.5, 0.5)
-
-for gal in os.listdir('./galaxies/spinparitygals/g'):
-    diff = np.array([0.0, 0.0])
-    for x in r:
-        for y in r:
-            diff += test_shift('./galaxies/spinparitygals/g/' + gal, (x, y)) 
-        
-    res = diff / (len(r) * len(r))
-    dist = np.sqrt(res[0]**2 + res[1]**2)
-    num = num_stars('./galaxies/spinparitygals/g/' + gal)
-    
-    
-    print gal, num, dist
-    sys.stderr.write('{} {} {}'.format(gal, str(num), str(dist)))
-    names.append(gal)
-    nums.append(num)
-    dists.append(dist)
-
-plt.scatter(nums, dists)
-plt.savefig('plot2.png')
-
-
-for path in glob.glob('core.*'):
     try:
-        os.remove(path)
+        if os.path.exists(outdir):
+            shutil.rmtree(outdir)
+        os.mkdir(outdir)
     except:
-        pass
+        print 'Error creating {}'.format(outdir)
+        return
+
+    # for each input image, shift it back and forth and save the output
+    for path in [os.path.join(galpath, f) for f in os.listdir(os.path.join(galpath, 'inputs')) if '.fits' in f]:
+        gal = fits.open(path, ignore_missing_end = True)
+        img = gal[0].data
+        posVec, negVec = np.array(vector), np.array(vector) * -1
+        
+        for i in range(cycles):
+            img = shift_gal.shift_img(img, posVec)
+            img = shift_gal.shift_img(img, negVec)
+
+        gal[0].data = img
+        gal.writeto(os.path.join(outdir, '{}_({},{})_{}.fits'.format(os.path.basename(path).split('.')[0], vector[0], vector[1], cycles)))
 
 
+def calc_shift_residuals(galpath, outdir, shifts):
+    """Calculates the residual of the original waveband shifted and then shifted back"""
+
+    if not os.path.exists(galpath):
+        print '{} is not a valid directory'.format(galpath)
+        return
+
+    try:
+        if os.path.exists(outdir):
+            shutil.rmtree(outdir)
+        os.mkdir(outdir)
+    except:
+        print 'Error creating {}'.format(outdir)
+        return
+    
+    galname = os.path.basename(galpath)
+    output = open(os.path.join(galpath, 'output.txt'), 'w')
+    colors = ('_g', '_i', '_r', '_u', '_z')
+    output_paths = sorted([os.path.join(galpath, f) for f in os.listdir(galpath) if '.fits' in f])
+    input_paths = sorted([os.path.join(galpath, 'inputs', f) for f in os.listdir(os.path.join(galpath, 'inputs')) if '.fits' in f])
+
+    assert len(input_paths) == len(output_paths) == len(shifts)
+    
+    for inp, out, vec in zip(input_paths, output_paths, shifts):
+        inp_img = fits.open(inp, ignore_missing_end = True)
+        out_img = fits.open(out, ignore_missing_end = True)
+        assert inp_img[0].data.shape == out_img[0].data.shape
+        residual = inp_img[0].data - shift_gal.shift_img(out_img[0].data, np.array(vec) * -1)
+        inp_img[0].data = residual
+        inp_img.writeto(os.path.join(outdir, '{}_{}_{}.fits'.format(os.path.basename(inp).split('.')[0], np.min(residual), np.max(residual))))
+    
+
+
+def calc_star_residual(s1, s2):
+    """Returns a normalized array of the residual between the two stars."""
+    #s1, s2  = s1 - np.min(s1), s2 - np.min(s2)
+    s1, s2 = s1 / np.max(s1), s2 / np.max(s2)
+    sub = s1 - s2
+    return sub + np.min(sub)
+
+
+def calc_star_residuals(galpath, outdir, star_class_perc):
+    """Calcualtes the star redisuals for each waveaband in all other wavebands present.
+       Expects galpath to conatin each waveband as 'color.fits', output is saved by star."""
+    
+    if not os.path.exists(galpath):
+        print '{} is not a valid directory'.format(galpath)
+        return
+
+    try:
+        if os.path.exists(outdir):
+            shutil.rmtree(outdir)
+        os.mkdir(outdir)
+    except:
+        print 'Error creating {}'.format(outdir)
+        return
+
+    # load shifted galaxies
+    gal = load_gals.load_galaxy_separate(galpath, star_class_perc)
+    
+    # for each combination of wavebands, find the stars that are in both
+    # then calculate a redisual for both
+    for c1 in gal.colors():
+        for c2 in gal.colors():
+            if c1 == c2: continue
+            c1_stars, c2_stars = shift_gal.find_like_points(gal.stars(c1), gal.stars(c2))
+            
+            # for each pair (which should be the same star), isolate the image
+            # containing it and compare thier difference
+            for c1_star, c2_star in zip(c1_stars, c2_stars):
+                
+                # fit each star to find (roughly) the size of it
+                # this doesn't need to be perfect but should give a rough
+                # estimage of how big the image needs to be for the residual
+                try:
+                    c1_fit = find_center.estimate_center(gal.images(c1), c1_star)
+                    c2_fit = find_center.estimate_center(gal.images(c2), c2_star)
+                    
+                except find_center.CurveFitError:
+                    pass
+
+                else:
+                    # add 2 pixels on either size, and 0.5 so that rounding is done correctly 
+                    size = int(max(c1_fit.x_spread, c1_fit.y_spread, c2_fit.x_spread, c2_fit.y_spread) + 10)
+                    s1x, s1y, s2x, s2y = int(c1_star.x), int(c1_star.y), int(c2_star.x), int(c2_star.y)
+                    left = max(0, s1x - size, s2x - size)
+                    right = min(gal.images(c1).shape[1], s1x + size, s2x + size)
+                    top = max(0, s1y - size, s2y - size)
+                    bottom = min(gal.images(c1).shape[0], s1y + size, s2y + size)
+                    
+                    if left == right or top == bottom: continue
+
+                    s1 = gal.images(c1)[top : bottom, left : right]
+                    s2 = gal.images(c2)[top : bottom, left : right]
+                    residual = calc_star_residual(s1, s2)
+
+                    # scale up for easier image viewing
+                    scale = (10, 10)
+                    s1_scale, s2_scale = np.kron(s1, np.ones(scale)), np.kron(s2, np.ones(scale))
+                    residual = np.kron(residual, np.ones(scale))
+                    
+                    
+                    plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}a.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), s1_scale, cmap = 'gray')
+                    plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}b.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), s2_scale, cmap = 'gray')
+                    plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}c.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), residual, cmap = 'gray')
 
 

@@ -12,7 +12,7 @@ import sys
 import load_gals
 import find_center
 import random
-import star_residual
+import testing
 
 class StarsNotWithinSigmaError(Exception): pass
 
@@ -148,8 +148,8 @@ def prints(line, f, save_output):
     if save_output: f.write(line + '\n')
 
 
-def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_stars_template, min_stars_all, save_inputs, save_points, save_output, save_star_residuals, star_class_perc):
- 
+def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_stars_template, min_stars_all, save_inputs, save_points, save_output, save_star_residuals, star_class_perc, min_wavebands, save_shift_residuals, save_smears = True):
+    
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
     try:
@@ -162,7 +162,32 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
     if save_inputs: os.mkdir(os.path.join(p, 'inputs'))
     if save_points: os.mkdir(os.path.join(p, 'points'))
     if save_output: output = open(os.path.join(p, 'output.txt'), 'w')
-    if save_star_residuals: os.mkdir(os.path.join(p, 'residuals'))
+    if save_star_residuals or save_shift_residuals or save_smears: os.mkdir(os.path.join(p, 'testing'))
+    if save_shift_residuals: shifts = [] 
+    amt_wavebands_saved = 0
+    
+
+    def clean_up():
+        if amt_wavebands_saved < min_wavebands:
+            try:
+                print 'Deleting output, not enough wavebands were viable ({} of {} needed)'.format(amt_wavebands_saved, min_wavebands)
+                shutil.rmtree(p)
+            except: pass
+        
+        elif save_star_residuals and amt_wavebands_saved > 0:
+            prints('Calculating star residuals', output, save_output)
+            testing.calc_star_residuals(p, os.path.join(p, 'testing', 'star_residuals'), star_class_perc)
+        
+        if save_shift_residuals and amt_wavebands_saved > 0:
+            prints('Calculating shift residuals', output, save_output)
+            testing.calc_shift_residuals(p, os.path.join(p, 'testing', 'shift_residuals'), shifts)
+        
+        if save_smears and amt_wavebands_saved > 0:
+            prints('Saving repeated shift (0.5, 0.5), 20 times', output, save_output)
+            testing.test_smearing(p, os.path.join(p, 'testing', 'smears'))
+
+        if save_output: output.close()
+
 
     prints('--- Processing galaxy {} ---'.format(galaxy.name), output, save_output)
      
@@ -179,8 +204,7 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
     # if there aren't enough stars in the template galaxy then return
     if len(galaxy.stars(template_color)) < min_stars_template:
         prints('Reference waveband {} does not have enough stars'.format(template_color), output, save_output)
-        if save_output: output.close()
-        return
+        clean_up()
    
     # calculate the center points for the refernce galaxy
     ref_gal, ref_stars = galaxy.images(template_color), []
@@ -237,9 +261,10 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
                 continue
         
         # END IF
-
+        amt_wavebands_saved += 1
+        shifts.append(vector)
         prints('Shifted waveband {} by vector {} using {} stars'.format(color, tuple(vector), len(fit_stars)), output, save_output)
-
+        
         def save_png():
             padded_img = np.pad(img - np.min(img), int(len(img) * 0.1), 'constant') if include_border else img
             thres = np.max(padded_img) * 0.015
@@ -264,7 +289,9 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
             nf.header.update(w.to_header())
             hdu = fits.HDUList([nf])
             hdu.writeto(os.path.join(p,  galaxy.name + '_' + color + '.fits'))
-            if save_inputs: f.writeto(os.path.join(p, 'inputs', galaxy.name + '_' + color + '.fits'))
+            if save_inputs: 
+                nf.data = padded_img
+                nf.writeto(os.path.join(p, 'inputs', galaxy.name + '_' + color + '.fits'))
         
 
         if out_type == 'png':
@@ -290,9 +317,8 @@ def process_galaxy(galaxy, out_dir, include_border, out_type, template, min_star
             plt.scatter(f_x, f_y, s = 2, color = 'red')
             plt.savefig(os.path.join(p, 'points', galaxy.name + '_' + color + '.png'))
     
-    if save_output: output.close()
+    clean_up()
     
-    if save_star_residuals: star_residual.calc_residuals(p, os.path.join(p, 'residuals'), star_class_perc)
 
 if __name__ == '__main__':
     
@@ -308,10 +334,12 @@ if __name__ == '__main__':
     parser.add_argument('-template', default = 'max_stars', choices = ['max_stars', 'max_contrast'], help = 'Controls how the template galaxy (the one that the other wavebands will be shifted to match) is chosen.  If "max_stars" then the waveband with the most stars is chosen.  If "max_contrast" then the waveband with the highest contrast is chosen.  Default is "max_stars".')  
     parser.add_argument('-min_stars_template', default = 5, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
     parser.add_argument('-min_stars_all', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
-    parser.add_argument('-save_inputs', default = 'False', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the input images are saved as part of the output.  Default is false.')
-    parser.add_argument('-save_points', default = 'False', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Controls if an image with the sextractor and fitted points if saved as part of the output.  Default is false.')
-    parser.add_argument('-save_output_info', default = 'True', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then a txt file is saved with the displayed output for each galaxy.')
-    parser.add_argument('-save_star_residuals', default = 'True', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves images comparing each star in to the same star in each waveband, this should be used to show that the stars are correctly cetnered.')
+    parser.add_argument('-save_inputs', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the input images are saved as part of the output.  Default is false.')
+    parser.add_argument('-save_points', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Controls if an image with the sextractor and fitted points if saved as part of the output.  Default is false.')
+    parser.add_argument('-save_output_info', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then a txt file is saved with the displayed output for each galaxy.')
+    parser.add_argument('-save_star_residuals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves images comparing each star in to the same star in each waveband, this should be used to show that the stars are correctly cetnered.')
+    parser.add_argument('-save_shift_residuals', default = '1', choices = ['True', 'true', '1', 'False', 'fakse', '0'], help = 'Saves a residual image of the output shifted shifted back the opposite vector it was shifted and the original image.')
+    parser.add_argument('-min_wavebands', default = 0, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -346,8 +374,19 @@ if __name__ == '__main__':
     args.save_points = True if args.save_points in t else False
     args.save_output_info = True if args.save_output_info in t else False
     args.save_star_residuals = True if args.save_star_residuals in t else False
+    args.save_shift_residuals = True if args.save_shift_residuals in t else False
+    
+    # check that there are no conflicting arguments
+    if args.save_shift_residuals and not args.save_inputs:
+        print 'In order for the shift residuals to be calculated save_inputs must be set to "true"'
+        exit(1)
 
-    if not os.path.exists('temp_fits'): os.mkdir('temp_fits')
+    if (args.save_shift_residuals or args.save_star_residuals) and args.save_type not in ('fits', 'both'):
+        print 'In order for residuals to be calculated save_type must either be "both" or "fits"'
+        exit(1)
+
+    if not os.path.exists('temp_fits'): 
+        os.mkdir('temp_fits')
     
     # run ShiftGal, if an error occurs still remove all temp files
     try:
@@ -355,10 +394,10 @@ if __name__ == '__main__':
         galgen = load_gals.load_galaxies_SDSS(args.in_dir, args.sub_dir, args.star_class_perc) if args.in_format == 'SDSS' else load_gals.load_galaxies_separate(args.in_dir, args.star_class_perc)
         for gal in galgen:
             if gal is None: continue
-            process_galaxy(gal, args.out_dir, args.include_border, args.save_type, args.template, args.min_stars_template, args.min_stars_all, args.save_inputs, args.save_points, args.save_output_info, args.save_star_residuals, args.star_class_perc)
+            process_galaxy(gal, args.out_dir, args.include_border, args.save_type, args.template, args.min_stars_template, args.min_stars_all, args.save_inputs, args.save_points, args.save_output_info, args.save_star_residuals, args.star_class_perc, args.min_wavebands, args.save_shift_residuals)
             print
 
-    except IndexError as e:    
+    except Exception as e:    
         raise e
 
     finally:

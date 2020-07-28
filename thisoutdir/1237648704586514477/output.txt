@@ -1,0 +1,10 @@
+--- Processing galaxy 1237648704586514477 ---
+Reference waveband chosen is i
+Number of stars in reference waveband 14
+Shifted waveband g by vector (-0.38172000000008666, 0.7699700000000576) using 4 stars
+Shifted waveband i by vector (0, 0) using 14 stars
+Shifted waveband r by vector (-0.38772999999997637, 0.15554999999994834) using 7 stars
+Skipping waveband u, not enough stars could be fit (0 stars)
+Shifted waveband z by vector (-0.5955716666666527, 0.009513333333340293) using 13 stars
+Calculating shift residuals
+Saving repeated shift (0.5, 0.5), 20 times
