@@ -13,8 +13,7 @@ import load_gals
 import find_center
 import random
 import testing
-from skimage.feature import peak_local_max
-from scipy.spatial import cKDTree
+from scipy.ndimage import extrema 
 
 
 class StarsNotWithinSigmaError(Exception): pass
@@ -128,27 +127,7 @@ def average_vector(m_src, m_trg, maxsigma = 1):
     return avg
 
 
-def label_vornoi_cells(img):
-    """Finds the stars in the img, then creates a Vornoi diagram around those stars.
-       Returns an array of the same size as the image with a number representing each label."""
-    
-    points = np.flip(np.array(peak_local_max(img, min_distance = int(img.shape[0] * 0.07), threshold_rel = 0.001)), axis = 1)
-    tree = cKDTree(points)
-    xx, yy = np.meshgrid(np.linspace(0, img.shape[1] - 1, img.shape[1]), np.linspace(0, img.shape[0] - 1, img.shape[0]))
-    xy = np.c_[xx.ravel(), yy.ravel()]
-    return tree.query(xy)[1].reshape(*img.shape)
-
-
-def normalize_gradient_by_cell(grad, cells, const):
-    """Normalizes each labeled cell in the gradient to (1 - (1/const), 1 + (1/const))"""
-    for lbl in np.unique(cells):
-        grad[(cells == lbl) & (grad < 0)] /= abs(np.min(grad[(cells == lbl) & (grad < 0)]) * const)
-        grad[(cells == lbl) & (grad > 0)] /= abs(np.max(grad[(cells == lbl) & (grad > 0)]) * const)
-    
-    return grad + 1
-
-
-def shift_img(gal, vector, method, const = 19):
+def shift_img(gal, vector, method, const = 19, mean_const = 30):
     """shifts the image by the 2D vector given"""
     
     if vector[0] == 0 and vector[1] == 0: return gal
@@ -169,7 +148,13 @@ def shift_img(gal, vector, method, const = 19):
         gal = gal - abs(y_rem) * gal + abs(y_rem) * y_shift
     
     elif method == 'gradient':
-        grad_cells = label_vornoi_cells(gal)
+        points = np.array(extrema(gal)[2:])
+        print points
+        plt.imshow(gal, cmap = 'gray')
+        plt.scatter(points[:,0], points[:,1])
+        plt.savefig('outdir/test.png')
+        exit(1)
+        
         grad = np.gradient(gal)
         
         x_shift = np.roll(gal, int(np.sign(x_rem)), axis = 1)
@@ -180,7 +165,19 @@ def shift_img(gal, vector, method, const = 19):
         # opposite for the left side, so we want the gradient to be positive in the direction of the shift
 
         grad_x = grad[1] if x_rem > 0 else grad[1] * -1
-        grad_x = normalize_gradient_by_cell(grad_x, grad_cells, const)
+        
+        # Get rid of the extreme outliers in the gradient, this makes it so that not so bright
+        #   objects will still be affected (capping out the max and min gradient value as a multiple of the mean)
+        min_mean, max_mean = np.mean(grad_x[grad_x < 0]) * mean_const, np.mean(grad_x[grad_x > 0]) * mean_const
+        grad_x[(grad_x < 0) & (grad_x < min_mean)] = min_mean
+        grad_x[(grad_x > 0) & (grad_x > max_mean)] = max_mean
+        
+        # Normalize the gradient such that 1 = no change, (1 - (1/const), 1) = dimming in the direction of the shift
+        #   and (1, 1 + (1/const)) = brightening in the direction of the shift
+        # One should be no change since that shows the photons are roughly evenly distrubted across the pixel
+        grad_x[grad_x < 0] /= abs(np.min(grad_x) * const)
+        grad_x[grad_x > 0] /= abs(np.max(grad_x) * const)
+        grad_x += 1
         
         # Multiply by the shift so that it is scalled down
         grad_x = grad_x * abs(x_rem)
@@ -192,7 +189,12 @@ def shift_img(gal, vector, method, const = 19):
         grad = np.gradient(gal)
         y_shift = np.roll(gal, int(np.sign(y_rem)), axis = 0)
         grad_y = grad[0] if y_rem > 0 else grad[0] * -1
-        grad_y = normalize_gradient_by_cell(grad_y, grad_cells, const)
+        min_mean, max_mean = np.mean(grad_y[grad_y < 0]) * mean_const, np.mean(grad_y[grad_y > 0]) * mean_const
+        grad_y[(grad_y < 0) & (grad_y < min_mean)] = min_mean
+        grad_y[(grad_y > 0) & (grad_y > max_mean)] = max_mean
+        grad_y[grad_y < 0] /= abs(np.min(grad_y) * const)
+        grad_y[grad_y > 0] /= abs(np.max(grad_y) * const)
+        grad_y += 1
         grad_y = grad_y * abs(y_rem)
         grad_y[grad_y > 1] = 1
         grad_shift_y = np.roll(grad_y, int(np.sign(y_rem)), axis = 0)

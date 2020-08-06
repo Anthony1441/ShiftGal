@@ -8,8 +8,9 @@ import shutil
 import find_center
 import shift_gal
 import copy
+import sys
 
-def test_smearing(galpath, outdir, vector = (0.5, 0.5), cycles = 1000):
+def test_smearing(galpath, outdir, shift_method, vector = (0.5, 0.5), cycles = 20, save_data = True):
     """Shifts the galaxies in galpath back and forth to create a smearing effect"""
 
     if not os.path.exists(galpath):
@@ -23,22 +24,70 @@ def test_smearing(galpath, outdir, vector = (0.5, 0.5), cycles = 1000):
     except:
         print 'Error creating {}'.format(outdir)
         return
+    
+    if save_data: sum_diff, max_diff = [], []
 
     # for each input image, shift it back and forth and save the output
-    for path in [os.path.join(galpath, f) for f in os.listdir(os.path.join(galpath, 'inputs')) if '.fits' in f]:
+    for path in sorted([os.path.join(galpath, f) for f in os.listdir(os.path.join(galpath, 'inputs')) if '.fits' in f]):
         gal = fits.open(path, ignore_missing_end = True)
-        img = gal[0].data
+        img = np.copy(gal[0].data)
         posVec, negVec = np.array(vector), np.array(vector) * -1
         
+        print 'Running shifts on', os.path.basename(os.path.splitext(path)[0])
+        
         for i in range(cycles):
-            img = shift_gal.shift_img(img, posVec)
-            img = shift_gal.shift_img(img, negVec)
-
+            img = shift_gal.shift_img(img, posVec, shift_method)
+            img = shift_gal.shift_img(img, negVec, shift_method)
+            
+            if save_data:
+                sum_diff.append(100 * np.sum(np.abs(gal[0].data - img)) / np.sum(gal[0].data))
+                max_diff.append(abs(np.max(gal[0].data) - np.max(img)))
+        
+        gal_cpy = np.copy(gal[0].data)
         gal[0].data = img
         gal.writeto(os.path.join(outdir, '{}_({},{})_{}.fits'.format(os.path.basename(path).split('.')[0], vector[0], vector[1], cycles)))
+        gal[0].data = np.abs(gal_cpy - img)
+        gal.writeto(os.path.join(outdir, '{}_({},{})_{}_residual.fits'.format(os.path.basename(path).split('.')[0], vector[0], vector[1], cycles)))
+        
+        if save_data:
+            plt.figure()
+            plt.plot(np.arange(len(sum_diff)), sum_diff)
+            plt.title('{} Absolute Difference in Photon Count'.format(os.path.basename(os.path.splitext(path)[0])))
+            plt.xlabel('Number of Repeated Shifts')
+            plt.ylabel('Difference in Count as a % of Total Count')
+            plt.savefig(os.path.join(outdir, '{}_sum_diff.png'.format(os.path.basename(os.path.splitext(path)[0]))))
+            plt.figure()
+            plt.plot(np.arange(len(max_diff)), max_diff)
+            plt.title('{} Difference in Max Pixel Value'.format(os.path.basename(os.path.splitext(path)[0])))
+            plt.xlabel('Number of Repeated Shifts')
+            plt.ylabel('Differnece in Photon Count')
+            plt.savefig(os.path.join(outdir, '{}_max_diff.png'.format(os.path.basename(os.path.splitext(path)[0]))))
+            sum_diff, max_diff = [], []
 
+"""
+def test_shift_params():
 
-def calc_shift_residuals(galpath, outdir, shifts):
+    if os.path.exists('paramtest'):
+        shutil.rmtree('paramtest')
+    os.mkdir('paramtest')
+    
+    gal = fits.open('testgal/1237648702967251093/i.fits', ignore_missing_end = True)
+    org_img = gal[0].data
+    s_img = np.copy(org_img)
+ 
+    for const in np.arange(19, 20, 1):
+        for sigma in np.arange(0, 1, 2):
+            for mean_const in np.arange(30, 31, 1):
+                for _ in range(10):
+                    s_img = shift_gal.shift_img(s_img, (0.5, 0.5), 'gradient', const = const, sigma = sigma, mean_const = mean_const)
+                    s_img = shift_gal.shift_img(s_img, (-0.5, -0.5), 'gradient', const = const, sigma = sigma, mean_const = mean_const)
+                
+                print const, sigma, mean_const, np.sum(np.abs(org_img - s_img))
+                
+                
+                s_img = np.copy(org_img)
+"""
+def calc_shift_residuals(galpath, outdir, shifts, shift_method):
     """Calculates the residual of the original waveband shifted and then shifted back"""
 
     if not os.path.exists(galpath):
@@ -65,7 +114,7 @@ def calc_shift_residuals(galpath, outdir, shifts):
         inp_img = fits.open(inp, ignore_missing_end = True)
         out_img = fits.open(out, ignore_missing_end = True)
         assert inp_img[0].data.shape == out_img[0].data.shape
-        residual = inp_img[0].data - shift_gal.shift_img(out_img[0].data, np.array(vec) * -1)
+        residual = inp_img[0].data - shift_gal.shift_img(out_img[0].data, np.array(vec) * -1, shift_method)
         inp_img[0].data = residual
         inp_img.writeto(os.path.join(outdir, '{}_{}_{}.fits'.format(os.path.basename(inp).split('.')[0], np.min(residual), np.max(residual))))
     
@@ -144,4 +193,4 @@ def calc_star_residuals(galpath, outdir, star_class_perc):
                     plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}b.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), s2_scale, cmap = 'gray')
                     plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}c.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), residual, cmap = 'gray')
 
-
+#test_shift_params()
