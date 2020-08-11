@@ -10,13 +10,8 @@ import shift_gal
 import copy
 import sys
 
-def test_smearing(galpath, outdir, shift_method, vector = (0.5, 0.5), cycles = 20, save_data = True):
+def test_smearing(outdir, img, shift_method, vcells, cycles = 30, save_data = True):
     """Shifts the galaxies in galpath back and forth to create a smearing effect"""
-
-    if not os.path.exists(galpath):
-        print '{} is not a valid directory'.format(galpath)
-        return
-
     try:
         if os.path.exists(outdir):
             shutil.rmtree(outdir)
@@ -27,42 +22,39 @@ def test_smearing(galpath, outdir, shift_method, vector = (0.5, 0.5), cycles = 2
     
     if save_data: sum_diff, max_diff = [], []
 
-    # for each input image, shift it back and forth and save the output
-    for path in sorted([os.path.join(galpath, f) for f in os.listdir(os.path.join(galpath, 'inputs')) if '.fits' in f]):
-        gal = fits.open(path, ignore_missing_end = True)
-        img = np.copy(gal[0].data)
-        posVec, negVec = np.array(vector), np.array(vector) * -1
-        
-        print 'Running shifts on', os.path.basename(os.path.splitext(path)[0])
-        
-        for i in range(cycles):
-            img = shift_gal.shift_img(img, posVec, shift_method)
-            img = shift_gal.shift_img(img, negVec, shift_method)
-            
-            if save_data:
-                sum_diff.append(100 * np.sum(np.abs(gal[0].data - img)) / np.sum(gal[0].data))
-                max_diff.append(abs(np.max(gal[0].data) - np.max(img)))
-        
-        gal_cpy = np.copy(gal[0].data)
-        gal[0].data = img
-        gal.writeto(os.path.join(outdir, '{}_({},{})_{}.fits'.format(os.path.basename(path).split('.')[0], vector[0], vector[1], cycles)))
-        gal[0].data = np.abs(gal_cpy - img)
-        gal.writeto(os.path.join(outdir, '{}_({},{})_{}_residual.fits'.format(os.path.basename(path).split('.')[0], vector[0], vector[1], cycles)))
-        
+    org = np.copy(img)
+
+    for i in range(cycles):
+        print i
+        vector = np.random.random(2)
+        img = shift_gal.shift_img(img, vector, shift_method, vcells)
+        img = shift_gal.shift_img(img, vector * -1, shift_method, vcells)
         if save_data:
-            plt.figure()
-            plt.plot(np.arange(len(sum_diff)), sum_diff)
-            plt.title('{} Absolute Difference in Photon Count'.format(os.path.basename(os.path.splitext(path)[0])))
-            plt.xlabel('Number of Repeated Shifts')
-            plt.ylabel('Difference in Count as a % of Total Count')
-            plt.savefig(os.path.join(outdir, '{}_sum_diff.png'.format(os.path.basename(os.path.splitext(path)[0]))))
-            plt.figure()
-            plt.plot(np.arange(len(max_diff)), max_diff)
-            plt.title('{} Difference in Max Pixel Value'.format(os.path.basename(os.path.splitext(path)[0])))
-            plt.xlabel('Number of Repeated Shifts')
-            plt.ylabel('Differnece in Photon Count')
-            plt.savefig(os.path.join(outdir, '{}_max_diff.png'.format(os.path.basename(os.path.splitext(path)[0]))))
-            sum_diff, max_diff = [], []
+            sum_diff.append(100 * np.sum(np.abs(org - img)) / np.sum(org))
+            max_diff.append(abs(np.max(org) - np.max(img)))
+    
+    nf = fits.PrimaryHDU()
+    nf.data = img
+    gal = fits.HDUList([nf])
+    gal.writeto(os.path.join(outdir, 'smear.fits'))
+    nf.data = np.abs(org - img)
+    gal = fits.HDUList([nf])
+    gal.writeto(os.path.join(outdir, 'smear_residual.fits'))
+        
+    if save_data:
+        plt.figure()
+        plt.plot(np.arange(len(sum_diff)), sum_diff)
+        plt.title('Absolute Difference in Photon Count')
+        plt.xlabel('Number of Repeated Shifts')
+        plt.ylabel('Difference in Count as a % of Total Count')
+        plt.savefig(os.path.join(outdir, 'sum_diff.png'))
+        plt.figure()
+        plt.plot(np.arange(len(max_diff)), max_diff)
+        plt.title('Difference in Max Pixel Value')
+        plt.xlabel('Number of Repeated Shifts')
+        plt.ylabel('Differnece in Photon Count')
+        plt.savefig(os.path.join(outdir, 'max_diff.png'))
+        sum_diff, max_diff = [], []
 
 """
 def test_shift_params():
