@@ -135,19 +135,21 @@ def label_vornoi_cells(img, points):
 def normalize_gradient_by_cell(grad, cells, range_const):
     """Normalizes each labeled cell in the gradient to (1 - (1/const), 1 + (1/const))"""
     for lbl in np.unique(cells):
-        grad[(cells == lbl) & (grad < 0)] /= abs(np.min(grad[(cells == lbl) & (grad < 0)]) * range_const)
-        grad[(cells == lbl) & (grad > 0)] /= abs(np.max(grad[(cells == lbl) & (grad > 0)]) * range_const)
-    
+        
+        try: grad[(cells == lbl) & (grad < 0)] /= abs(np.min(grad[(cells == lbl) & (grad < 0)]) * range_const)
+        except: pass
+        try: grad[(cells == lbl) & (grad > 0)] /= abs(np.max(grad[(cells == lbl) & (grad > 0)]) * range_const)
+        except: pass
+
     return grad + 1
 
 
-def shift_img(gal, vector, method, vcells = None, range_const = 19):
+def shift_img(gal, vector, method, vcells = None, range_const = 5, check_count = True):
     """shifts the image by the 2D vector given"""
-    
+     
     if vector[0] == 0 and vector[1] == 0: return gal
-
     input_count = np.sum(gal)
-    
+   
     # shift the integer part of the axis
     gal = np.roll(gal, int(vector[0]), axis = 1)
     gal = np.roll(gal, int(vector[1]), axis = 0)
@@ -165,6 +167,7 @@ def shift_img(gal, vector, method, vcells = None, range_const = 19):
         grad = np.gradient(gal)
         
         x_shift = np.roll(gal, int(np.sign(x_rem)), axis = 1)
+        x_shift2 = np.roll(gal, int(np.sign(x_rem)) * 2, axis = 1)
         # Have the gradient be positive in the direction of the shift
         #   so that more photons to be moved in the direction of the shift
         # For example, if moving to the left then the pixels on the right side of the star
@@ -173,28 +176,46 @@ def shift_img(gal, vector, method, vcells = None, range_const = 19):
         grad_x = grad[1] if x_rem > 0 else grad[1] * -1
         grad_x = normalize_gradient_by_cell(grad_x, vcells, range_const)
         
-        # Multiply by the shift so that it is scalled down
+        # Multiply by the shift so that it is scaled down
         grad_x = grad_x * abs(x_rem)
-        # need to find a better way to deal with this part
-        grad_x[grad_x > 1] = 1
-        grad_shift_x = np.roll(grad_x, int(np.sign(x_rem)), axis = 1)
-        gal = gal - (grad_x * gal) + (grad_shift_x * x_shift)
         
+        # if shifting by nearly a pixel it is possible that
+        # some photons will need to be put over 1 away, for example 0.9 += 0.2 has some
+        # a possible 1.1 pixel shift
+        grad_shift_x = np.roll(grad_x, int(np.sign(x_rem)), axis = 1)
+        grad_shift_x[grad_shift_x > 1] = 1
+        grad_shift2_x = np.roll(grad_x - 1, int(np.sign(x_rem)) * 2, axis = 1)
+        
+        # remove photons from current location
+        gal -= (grad_x * gal)
+        # add to adjectent pixel 
+        gal += (grad_shift_x * x_shift)
+        # deal with shifts > 1 pixel by moving just the excess to 2 pixels adjacent
+        gal[grad_shift2_x > 0] += (grad_shift2_x * x_shift2)[grad_shift2_x > 0]
+        
+
         grad = np.gradient(gal)
         y_shift = np.roll(gal, int(np.sign(y_rem)), axis = 0)
+        y_shift2 = np.roll(gal, int(np.sign(y_rem)) * 2, axis = 0)
+
         grad_y = grad[0] if y_rem > 0 else grad[0] * -1
         grad_y = normalize_gradient_by_cell(grad_y, vcells, range_const)
         grad_y = grad_y * abs(y_rem)
-        grad_y[grad_y > 1] = 1
+        
         grad_shift_y = np.roll(grad_y, int(np.sign(y_rem)), axis = 0)
-        gal = gal - (grad_y * gal) + (grad_shift_y * y_shift)
-    
+        grad_shift_y[grad_shift_y > 1] = 1
+        grad_shift2_y = np.roll(grad_y - 1, int(np.sign(y_rem)) * 2, axis = 0)
+
+        gal -= (grad_y * gal)
+        gal += (grad_shift_y * y_shift)
+        gal[grad_shift2_y > 0] += (grad_shift2_y * y_shift2)[grad_shift2_y > 0]
+
     else:
         print 'Invalid shift method chosen, skipping sub-pixel shift'
     
     current_count = np.sum(gal)
     # check to make sure that the output photon count is within 0.05% of the original
-    if current_count > input_count + input_count * 0.0005 or current_count < input_count - input_count * 0.0005:
+    if check_count and (current_count > input_count + input_count * 0.0005 or current_count < input_count - input_count * 0.0005):
         raise PhotonCountNotPreservedAfterShiftError
 
     return gal
@@ -286,14 +307,21 @@ def shift_wavebands(galaxy, shift_vectors, shift_method, b_size, template_color)
     shifted_imgs = OrderedDict()
     # calculate the Vornoi diagram of the template galaxy to use for the remaining wavebands
     vcells = None
+
     if shift_method == 'gradient':
-        points = np.array([[p.x + b_size, p.y + b_size] for p in galaxy.all_stars_dict[template_color]])    
+        center_pixel, min_dist = int(len(galaxy.images('g')) / 2.0), len(galaxy.images('g')) * 0.15
+        points = [[p.x + b_size, p.y + b_size] for p in galaxy.all_stars_dict[template_color]]
+        new_points = []
+        for p in points:
+            dist = np.sqrt((p[0] - center_pixel)**2 + (p[1] - center_pixel)**2)
+            if dist > min_dist or dist < 10:
+                new_points.append(p)
+        points = np.array(new_points)
         vcells = label_vornoi_cells(galaxy.images(template_color), points)
     
     for color, vector in shift_vectors.items():
         if vector is not None:
-            shifted_imgs.update({color: shift_img(galaxy.images(color), vector, shift_method, vcells = vcells)})
-            
+            shifted_imgs.update({color: shift_img(galaxy.images(color), vector, shift_method, vcells = vcells)})    
             prints('Shifted waveband {} by vector {}'.format(color, tuple(vector)), output)
     
     return shifted_imgs, vcells
@@ -347,10 +375,12 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 
     try:
         template_color, template_stars = find_template_gal_and_stars(galaxy, min_stars_template)
-    
+        #template_image_cpy = np.copy(galaxy.images(template_color)) 
     except NoViableTemplateError:
         prints('No viable template could be found', output)
         output.close()
+        try: shutil.rmtree(p)
+        except: pass
         return
    
     prints('Reference waveband chosen is {} with {} stars'.format(template_color, len(template_stars)), output) 
@@ -359,16 +389,18 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
     b_size = int(len(galaxy.images('g')) * border_size)
     galaxy.add_borders(b_size)
     shift_imgs, vcells = shift_wavebands(galaxy, shift_vectors, shift_method, b_size, template_color)
-    save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
-
+    
     if len(shift_imgs.keys()) < min_wavebands:
         try:
-            print 'Deleting output, not enough wavebands were viable ({} of {} needed)'.format(amt_wavebands_saved, min_wavebands)
+            print 'Not saving output, not enough wavebands were viable ({} of {} needed)'.format(len(shift_imgs.keys()), min_wavebands)
+            output.close()
             shutil.rmtree(p)
         except: pass
     
     else:    
 
+        save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
+    
         if save_star_residuals or save_shift_residuals or save_smears: os.mkdir(os.path.join(p, 'testing'))
          
         if save_star_residuals:
@@ -381,9 +413,16 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         
         if save_smears:
             prints('Saving repeated shift', output)
-            testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, vcells)
+            
+            if shift_method == 'constant':
+                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method)
+            if shift_method == 'gradient':
+                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, vcells)
+                plt.imsave(os.path.join(p, 'testing', 'vornoi_diagram.png'), vcells)
+        
+        output.close()
 
-    output.close()
+    testing.test_params(galaxy.images(template_color), vcells, galaxy.name)
    
    
 if __name__ == '__main__':
@@ -433,22 +472,20 @@ if __name__ == '__main__':
     args.save_shift_residuals = True if args.save_shift_residuals in t else False
     args.save_smears = True if args.save_smears in t else False
 
-    try:    
-        for gal in load_gals.load_galaxies(args.in_dir, args.star_class_perc):
-            if gal is None: 
-                print 'HERE'
-                continue
+     
+    for gal in load_gals.load_galaxies(args.in_dir, args.star_class_perc):
+        if type(gal) == str: 
+            print 'Failed to load {}'.format(gal)
+            continue
+        try:
             process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.save_star_residuals, args.star_class_perc, args.min_wavebands, args.save_shift_residuals, args.shift_method, args.save_smears)
             print
 
-    except IndexError as e:    
-        raise e
+        except IndexError as e:    
+            print 'Failed to shift', gal.name
     
-    finally:
-        # if the star couldn't be fit (often when near the border of the image)
-        # then remove the core dump(s) it produced
-        for path in glob.glob('core.*'):
-            try: os.remove(path)
-            except: pass
+    for path in glob.glob('core.*'):
+        try: os.remove(path)
+        except: pass
 
 

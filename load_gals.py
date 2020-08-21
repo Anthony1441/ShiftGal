@@ -59,25 +59,28 @@ def load_galaxy(galpath, star_class_perc):
             continue
 
     # if no images were found
-    if not gal_dict: return None
+    if not gal_dict: return galpath
         
     # find the stars in the galaxies
     star_dict = OrderedDict()
     for color in gal_dict.keys():
-        p = os.path.join(galpath, color + '.fits')
-        if os.path.exists(p):
-            star_dict.update({color: get_sextractor_points(p)})
-            continue
+        try:
+            p = os.path.join(galpath, color + '.fits')
+            if os.path.exists(p):
+                star_dict.update({color: get_sextractor_points(p)})
+                continue
 
-        p2 = os.path.join(galpath, galname + '_' + color + '.fits')
-        if os.path.exists(p2):    
-            star_dict.update({color: get_sextractor_points(p2)})
-            continue
+            p2 = os.path.join(galpath, galname + '_' + color + '.fits')
+            if os.path.exists(p2):    
+                star_dict.update({color: get_sextractor_points(p2)})
+                continue
 
-        p3 = os.path.join(galpath, galname + '-' + color + '.fits')
-        if os.path.exists(p3):
-            star_dict.update({color: get_sextractor_points(p3)})
-            continue
+            p3 = os.path.join(galpath, galname + '-' + color + '.fits')
+            if os.path.exists(p3):
+                star_dict.update({color: get_sextractor_points(p3)})
+                continue
+        except SextractorError:
+            return galpath
 
     return Galaxy(gal_dict, star_dict, star_class_perc, galname)
 

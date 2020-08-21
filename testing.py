@@ -9,8 +9,10 @@ import find_center
 import shift_gal
 import copy
 import sys
+import subprocess
 
-def test_smearing(outdir, img, shift_method, vcells, cycles = 30, save_data = True):
+
+def test_smearing(outdir, img, shift_method, vcells = None, cycles = 20, save_data = True):
     """Shifts the galaxies in galpath back and forth to create a smearing effect"""
     try:
         if os.path.exists(outdir):
@@ -19,21 +21,36 @@ def test_smearing(outdir, img, shift_method, vcells, cycles = 30, save_data = Tr
     except:
         print 'Error creating {}'.format(outdir)
         return
-    
-    if save_data: sum_diff, max_diff = [], []
 
+    nf = fits.PrimaryHDU()
+    nf.data = img
+    gal = fits.HDUList([nf])
+    gal.writeto(os.path.join(outdir, 'temp.fits'))
+   
+    # create a star mask so that only the galaxy is affected
+    proc = subprocess.Popen(['./sex', os.path.join(outdir, 'temp.fits'), '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', os.path.join(outdir, 'temp_seg.fits'), '-CATALOG_NAME', 'temp_out.txt'], stderr = subprocess.PIPE)
+    res = proc.wait()
+    if res != 0: raise Exception
+    with fits.open(os.path.join(outdir, 'temp_seg.fits'), ignore_missing_end = True) as seg:
+        seg = seg[0].data
+        img[seg != seg[int(seg.shape[0] / 2), int(seg.shape[1] / 2)]] = np.median(img)
+
+    os.remove(os.path.join(outdir, 'temp.fits'))
+    os.remove(os.path.join(outdir, 'temp_seg.fits'))
+
+    if save_data: sum_diff, max_diff = [], []
     org = np.copy(img)
 
     for i in range(cycles):
-        print i
         vector = np.random.random(2)
-        img = shift_gal.shift_img(img, vector, shift_method, vcells)
-        img = shift_gal.shift_img(img, vector * -1, shift_method, vcells)
+        print 'Running {}, cycle {}'.format(vector, i + 1)
+        img = shift_gal.shift_img(img, vector, shift_method, vcells, check_count = False)
+        img = shift_gal.shift_img(img, vector * -1, shift_method, vcells, check_count = False)
         if save_data:
+            print np.sum(img), np.sum(org)    
             sum_diff.append(100 * np.sum(np.abs(org - img)) / np.sum(org))
             max_diff.append(abs(np.max(org) - np.max(img)))
     
-    nf = fits.PrimaryHDU()
     nf.data = img
     gal = fits.HDUList([nf])
     gal.writeto(os.path.join(outdir, 'smear.fits'))
@@ -47,38 +64,44 @@ def test_smearing(outdir, img, shift_method, vcells, cycles = 30, save_data = Tr
         plt.title('Absolute Difference in Photon Count')
         plt.xlabel('Number of Repeated Shifts')
         plt.ylabel('Difference in Count as a % of Total Count')
+        plt.xticks(np.arange(len(sum_diff)) + 1)
         plt.savefig(os.path.join(outdir, 'sum_diff.png'))
         plt.figure()
         plt.plot(np.arange(len(max_diff)), max_diff)
         plt.title('Difference in Max Pixel Value')
         plt.xlabel('Number of Repeated Shifts')
         plt.ylabel('Differnece in Photon Count')
+        plt.xticks(np.arange(len(sum_diff)) + 1)
         plt.savefig(os.path.join(outdir, 'max_diff.png'))
         sum_diff, max_diff = [], []
-
-"""
-def test_shift_params():
-
-    if os.path.exists('paramtest'):
-        shutil.rmtree('paramtest')
-    os.mkdir('paramtest')
     
-    gal = fits.open('testgal/1237648702967251093/i.fits', ignore_missing_end = True)
-    org_img = gal[0].data
+
+def test_params(org_img, vcells, name):
+    
+    diff = []
     s_img = np.copy(org_img)
- 
-    for const in np.arange(19, 20, 1):
-        for sigma in np.arange(0, 1, 2):
-            for mean_const in np.arange(30, 31, 1):
-                for _ in range(10):
-                    s_img = shift_gal.shift_img(s_img, (0.5, 0.5), 'gradient', const = const, sigma = sigma, mean_const = mean_const)
-                    s_img = shift_gal.shift_img(s_img, (-0.5, -0.5), 'gradient', const = const, sigma = sigma, mean_const = mean_const)
+    
+    s_img = shift_gal.shift_img(s_img, (0.5, 0.5), 'constant')
+    s_img = shift_gal.shift_img(s_img, (-0.5, -0.5), 'constant')
+    c = np.sum(np.abs(org_img - s_img))
+    s_img = np.copy(org_img)
+    
+    r = np.arange(1, 10, 1) 
+    for const in r:
+        for _ in range(20):
+            s_img = shift_gal.shift_img(s_img, (0.5, 0.5), 'gradient', vcells, range_const = const)
+            s_img = shift_gal.shift_img(s_img, (-0.5, -0.5), 'gradient', vcells, range_const = const)
                 
-                print const, sigma, mean_const, np.sum(np.abs(org_img - s_img))
-                
-                
-                s_img = np.copy(org_img)
-"""
+        print const, np.sum(np.abs(org_img - s_img))
+        diff.append(np.sum(np.abs(org_img - s_img)))
+        s_img = np.copy(org_img)
+    
+    plt.figure()
+    plt.plot(r, diff)
+    plt.title('Range Constant Value vs. Photon Count Difference (C was {})'.format(c))
+    plt.savefig('{}_range_const.png'.format(name))
+
+
 def calc_shift_residuals(galpath, outdir, shifts, shift_method):
     """Calculates the residual of the original waveband shifted and then shifted back"""
 
