@@ -144,7 +144,7 @@ def normalize_gradient_by_cell(grad, cells, range_const):
     return grad + 1
 
 
-def shift_img(gal, vector, method, vcells = None, range_const = 5, check_count = True):
+def shift_img(gal, vector, method, vcells = None, range_const = 10, check_count = True):
     """shifts the image by the 2D vector given"""
      
     if vector[0] == 0 and vector[1] == 0: return gal
@@ -415,14 +415,14 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
             prints('Saving repeated shift', output)
             
             if shift_method == 'constant':
-                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method)
+                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, run_sp = True, sp_path = '/home/antholn1/SpArcFiRe/scripts/SpArcFiRe')
             if shift_method == 'gradient':
-                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, vcells)
+                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, vcells, run_sp = True, sp_path = '/home/antholn1/SpArcFiRe/scripts/SpArcFiRe')
                 plt.imsave(os.path.join(p, 'testing', 'vornoi_diagram.png'), vcells)
         
         output.close()
 
-    testing.test_params(galaxy.images(template_color), vcells, galaxy.name)
+    #testing.test_params(galaxy.images(template_color), vcells, galaxy.name)
    
    
 if __name__ == '__main__':

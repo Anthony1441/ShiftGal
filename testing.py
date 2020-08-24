@@ -3,6 +3,7 @@ import matplotlib
 matplotlib.use('agg') # needed for openlab
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy import genfromtxt
 import os
 import shutil
 import find_center
@@ -12,69 +13,111 @@ import sys
 import subprocess
 
 
-def test_smearing(outdir, img, shift_method, vcells = None, cycles = 20, save_data = True):
-    """Shifts the galaxies in galpath back and forth to create a smearing effect"""
+class SpArcFiReError(Exception): pass
+
+
+def test_smearing(outdir, img, shift_method, vcells = None, cycles = 5, run_sp = False, sp_path = None):
+    """Shifts the galaxy back and forth randomly, running it through SpArcFiRe
+       each cycle and recorind the galaxy position"""
+       
+    outdir = os.path.abspath(outdir)
+    
     try:
         if os.path.exists(outdir):
             shutil.rmtree(outdir)
         os.mkdir(outdir)
     except:
-        print 'Error creating {}'.format(outdir)
+        print 'Error creating {}, smearing not tested.'.format(outdir)
         return
-
-    nf = fits.PrimaryHDU()
-    nf.data = img
-    gal = fits.HDUList([nf])
-    gal.writeto(os.path.join(outdir, 'temp.fits'))
    
-    # create a star mask so that only the galaxy is affected
-    proc = subprocess.Popen(['./sex', os.path.join(outdir, 'temp.fits'), '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', os.path.join(outdir, 'temp_seg.fits'), '-CATALOG_NAME', 'temp_out.txt'], stderr = subprocess.PIPE)
-    res = proc.wait()
-    if res != 0: raise Exception
-    with fits.open(os.path.join(outdir, 'temp_seg.fits'), ignore_missing_end = True) as seg:
-        seg = seg[0].data
-        img[seg != seg[int(seg.shape[0] / 2), int(seg.shape[1] / 2)]] = np.median(img)
+    def run_sparcfire(org, img_data):
+        """Runs SpArcFiRe on the files in sf_in, then returns the estimated position of the galaxy"""
+        try:
+            sf_in = os.path.join(outdir, 'sf_in')
+            sf_tmp = os.path.join(outdir, 'sf_tmp')
+            sf_out = os.path.join(outdir, 'sf_out')
 
-    os.remove(os.path.join(outdir, 'temp.fits'))
-    os.remove(os.path.join(outdir, 'temp_seg.fits'))
+            os.mkdir(sf_in)
+            os.mkdir(sf_tmp)
+            os.mkdir(sf_out)
+            
+            for i in range(cycles):
+                os.mkdir(os.path.join(sf_in, str(i)))
+                os.mkdir(os.path.join(sf_tmp, str(i)))
+                os.mkdir(os.path.join(sf_out, str(i)))
+                fits.HDUList([fits.PrimaryHDU(data = img_data[i])]).writeto(os.path.join(sf_in, str(i), 'temp.fits'))
+           
+            # get starting image center
+            os.mkdir(os.path.join(sf_in, 'org'))
+            os.mkdir(os.path.join(sf_tmp, 'org'))
+            os.mkdir(os.path.join(sf_out, 'org'))
+            fits.HDUList([fits.PrimaryHDU(data = org)]).writeto(os.path.join(outdir, 'org', 'temp.fits'))
+            proc = subprocess.Popen([sp_path, '-convert-FITS', os.path.join(sf_in, 'org'), os.path.join(sf_tmp, 'org'), os.path.join(sf_out, 'org'), '-generateFitQuality', '0', '-writeBulgeMask', '1']) 
 
-    if save_data: sum_diff, max_diff = [], []
+            # run each cycled image in parallel
+            procs = [subprocess.Popen([sp_path, '-convert-FITS', os.path.join(sf_in, str(i)), os.path.join(sf_tmp, str(i)), os.path.join(sf_out, str(i)), '-generateFitQuality', '0', '-writeBulgeMask', '1']) for i in range(cycles)]
+            for p in procs:
+                p.wait()
+            
+            proc.wait() 
+            f = genfromtxt(os.path.join(sf_out, 'org', 'galaxy.tsv'), skip_header = 1)
+            pos = (f[20], f[21])
+
+            #once they're done, calculate the change in position
+            pos_diff = []
+            for i in range(cycles):
+                f = genfromtxt(os.path.join(sf_out, str(i), 'galaxy.tsv'), skip_header = 1)
+                pos_diff.append(np.sqrt((f[20] - pos[0])**2 + (f[21] - pos[1])**2))
+
+            return pos_diff
+        
+        except IndexError:
+            raise SpArcFiReError
+        
+        finally:
+            try:
+                shutil.rmtree(sf_in)
+                shutil.rmtree(sf_tmp)
+                shutil.rmtree(sf_out)
+                for p in os.listdir('.'):
+                    if '_settings.txt' in p:
+                        os.remove(p)
+            except: pass
+
+    sum_diff = []
     org = np.copy(img)
+    if run_sp: cycle_imgs = [org]
 
     for i in range(cycles):
         vector = np.random.random(2)
-        print 'Running {}, cycle {}'.format(vector, i + 1)
+        print 'Running {}, cycle {}'.format(vector, i)
         img = shift_gal.shift_img(img, vector, shift_method, vcells, check_count = False)
         img = shift_gal.shift_img(img, vector * -1, shift_method, vcells, check_count = False)
-        if save_data:
-            print np.sum(img), np.sum(org)    
-            sum_diff.append(100 * np.sum(np.abs(org - img)) / np.sum(org))
-            max_diff.append(abs(np.max(org) - np.max(img)))
+        sum_diff.append(100 * np.sum(np.abs(org - img)) / np.sum(org))
+        if run_sp: cycle_imgs.append(np.copy(img))
+
+    fits.HDUList([fits.PrimaryHDU(data = img)]).writeto(os.path.join(outdir, 'smear.fits'))
+    fits.HDUList([fits.PrimaryHDU(data = np.abs(org - img))]).writeto(os.path.join(outdir, 'smear_residual.fits'))
+   
+    plt.figure()
+    plt.plot(np.arange(len(sum_diff)) + 1, sum_diff)
+    plt.title('Difference in Count as a % of Total Original Count')
+    plt.xlabel('Cycle')
+    plt.ylabel('Percent')
+    plt.savefig(os.path.join(outdir, 'sum_diff.png'))
     
-    nf.data = img
-    gal = fits.HDUList([nf])
-    gal.writeto(os.path.join(outdir, 'smear.fits'))
-    nf.data = np.abs(org - img)
-    gal = fits.HDUList([nf])
-    gal.writeto(os.path.join(outdir, 'smear_residual.fits'))
+    if run_sp:
         
-    if save_data:
+        pos_diff = run_sparcfire(org, cycle_imgs)
         plt.figure()
-        plt.plot(np.arange(len(sum_diff)), sum_diff)
-        plt.title('Absolute Difference in Photon Count')
-        plt.xlabel('Number of Repeated Shifts')
-        plt.ylabel('Difference in Count as a % of Total Count')
-        plt.xticks(np.arange(len(sum_diff)) + 1)
-        plt.savefig(os.path.join(outdir, 'sum_diff.png'))
-        plt.figure()
-        plt.plot(np.arange(len(max_diff)), max_diff)
-        plt.title('Difference in Max Pixel Value')
-        plt.xlabel('Number of Repeated Shifts')
-        plt.ylabel('Differnece in Photon Count')
-        plt.xticks(np.arange(len(sum_diff)) + 1)
-        plt.savefig(os.path.join(outdir, 'max_diff.png'))
-        sum_diff, max_diff = [], []
-    
+        plt.plot(np.arange(len(pos_diff)) + 1, pos_diff)
+        plt.title('Difference in Predicted Galaxy Center')
+        plt.ylabel('Difference in Pixels')
+        plt.xlabel('Cycle')
+        plt.savefig(os.path.join(outdir, 'pos_diff.png'))
+        
+       # for p in os.listdir('.'):
+       #     if '
 
 def test_params(org_img, vcells, name):
     
@@ -208,4 +251,3 @@ def calc_star_residuals(galpath, outdir, star_class_perc):
                     plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}b.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), s2_scale, cmap = 'gray')
                     plt.imsave(os.path.join(outdir, '{}_and_{}_at_{}_{}_diff_{}c.png'.format(c1, c2, s1x, s1y, np.max(residual) - np.min(residual))), residual, cmap = 'gray')
 
-#test_shift_params()
