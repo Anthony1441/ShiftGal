@@ -360,7 +360,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
 
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, save_star_residuals, star_class_perc, min_wavebands, save_shift_residuals, shift_method, save_smears):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, save_star_residuals, star_class_perc, min_wavebands, save_shift_residuals, shift_method, cycle_count, sp_path):
     
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
@@ -401,7 +401,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
     
-        if save_star_residuals or save_shift_residuals or save_smears: os.mkdir(os.path.join(p, 'testing'))
+        if save_star_residuals or save_shift_residuals or cycle_count > 0: os.mkdir(os.path.join(p, 'testing'))
          
         if save_star_residuals:
             prints('Calculating star residuals', output)
@@ -411,18 +411,16 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
             prints('Calculating shift residuals', output)
             testing.calc_shift_residuals(p, os.path.join(p, 'testing', 'shift_residuals'), [v for k, v in shift_vectors.iteritems() if v is not None], shift_method)
         
-        if save_smears:
+        if cycle_count > 0:
             prints('Saving repeated shift', output)
-            
             if shift_method == 'constant':
-                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, run_sp = True, sp_path = '/home/antholn1/SpArcFiRe/scripts/SpArcFiRe')
+                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, None, cycle_count, sp_path)
             if shift_method == 'gradient':
-                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, vcells, run_sp = True, sp_path = '/home/antholn1/SpArcFiRe/scripts/SpArcFiRe')
+                testing.test_smearing(os.path.join(p, 'testing', 'smears'), galaxy.images(template_color), shift_method, vcells, cycle_count, sp_path)
                 plt.imsave(os.path.join(p, 'testing', 'vornoi_diagram.png'), vcells)
         
         output.close()
 
-    #testing.test_params(galaxy.images(template_color), vcells, galaxy.name)
    
    
 if __name__ == '__main__':
@@ -439,8 +437,9 @@ if __name__ == '__main__':
     parser.add_argument('-save_originals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the original images are saved as part of the output.  Default is false.')
     parser.add_argument('-save_star_residuals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves images comparing each star in to the same star in each waveband, this should be used to show that the stars are correctly cetnered.')
     parser.add_argument('-save_shift_residuals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves a residual image of the output shifted shifted back the opposite vector it was shifted and the original image.')
-    parser.add_argument('-save_smears', default = 0, choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves an image randomly shifted back and forth 100 times.')
     parser.add_argument('-min_wavebands', default = 0, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
+    parser.add_argument('-cycle_count', default = 0, type = int, help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
+    parser.add_argument('-cycle_sp_path', default = None, help = 'The path to the local install of SpArcFiRe.  This is only needed if save_cycles_count is not 0.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -458,6 +457,14 @@ if __name__ == '__main__':
         print 'Border size much be a positive value.'
         exit(1)
 
+    if args.cycle_count < 0:
+        print 'Cycle count must be a non-negative integer.'
+        exit(1)
+
+    if args.cycle_count != 0 and args.cycle_sp_path is None:
+        print 'The path to your local install of SpArcFiRe must be given if the cycle count is non-zero.'
+        exit(1)
+    
     # if the output directory does not exist then create it
     try:
         if not os.path.isdir(args.out_dir):
@@ -470,7 +477,6 @@ if __name__ == '__main__':
     args.save_originals = True if args.save_originals in t else False
     args.save_star_residuals = True if args.save_star_residuals in t else False
     args.save_shift_residuals = True if args.save_shift_residuals in t else False
-    args.save_smears = True if args.save_smears in t else False
 
      
     for gal in load_gals.load_galaxies(args.in_dir, args.star_class_perc):
@@ -478,7 +484,7 @@ if __name__ == '__main__':
             print 'Failed to load {}'.format(gal)
             continue
         try:
-            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.save_star_residuals, args.star_class_perc, args.min_wavebands, args.save_shift_residuals, args.shift_method, args.save_smears)
+            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.save_star_residuals, args.star_class_perc, args.min_wavebands, args.save_shift_residuals, args.shift_method, args.cycle_count, args.cycle_sp_path)
             print
 
         except IndexError as e:    
