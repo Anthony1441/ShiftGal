@@ -16,6 +16,7 @@ import testing
 from skimage.feature import peak_local_max
 from scipy.spatial import cKDTree
 from collections import OrderedDict
+from scipy import ndimage 
 
 class NoViableTemplateError(Exception): pass
 
@@ -24,6 +25,8 @@ class NoStarsFitError(Exception): pass
 class StarsNotWithinSigmaError(Exception): pass
 
 class PhotonCountNotPreservedAfterShiftError(Exception): pass
+
+class NoError(Exception): pass
 
 # file used to write output to
 output = None
@@ -144,12 +147,11 @@ def normalize_gradient_by_cell(grad, cells, range_const):
     return grad + 1
 
 
-def shift_img(gal, vector, method, vcells = None, range_const = 10, check_count = True):
+def shift_img(gal, vector, method, vcells = None, range_const = 15, check_count = True, edge_order = 2):
     """shifts the image by the 2D vector given"""
      
-    if vector[0] == 0 and vector[1] == 0: return gal
+    if vector[0] == 0 and vector[1] == 0: return gal, 0
     input_count = np.sum(gal)
-   
     # shift the integer part of the axis
     gal = np.roll(gal, int(vector[0]), axis = 1)
     gal = np.roll(gal, int(vector[1]), axis = 0)
@@ -164,8 +166,8 @@ def shift_img(gal, vector, method, vcells = None, range_const = 10, check_count 
         gal = gal - abs(y_rem) * gal + abs(y_rem) * y_shift
     
     elif method == 'gradient':
-        grad = np.gradient(gal)
-        
+        grad = np.gradient(gal, edge_order = edge_order)
+        #grad = (None, ndimage.correlate(gal, [[1, 0, -1], [2, 0, -2], [1, 0, -1]], mode = 'nearest'))
         x_shift = np.roll(gal, int(np.sign(x_rem)), axis = 1)
         x_shift2 = np.roll(gal, int(np.sign(x_rem)) * 2, axis = 1)
         # Have the gradient be positive in the direction of the shift
@@ -194,7 +196,8 @@ def shift_img(gal, vector, method, vcells = None, range_const = 10, check_count 
         gal[grad_shift2_x > 0] += (grad_shift2_x * x_shift2)[grad_shift2_x > 0]
         
 
-        grad = np.gradient(gal)
+        grad = np.gradient(gal, edge_order = edge_order)
+        #grad = (ndimage.correlate(gal, [[1, 2, 1], [0, 0, 0], [-1, -2, -1]], mode = 'nearest'), None)
         y_shift = np.roll(gal, int(np.sign(y_rem)), axis = 0)
         y_shift2 = np.roll(gal, int(np.sign(y_rem)) * 2, axis = 0)
 
@@ -217,8 +220,8 @@ def shift_img(gal, vector, method, vcells = None, range_const = 10, check_count 
     # check to make sure that the output photon count is within 0.05% of the original
     if check_count and (current_count > input_count + input_count * 0.0005 or current_count < input_count - input_count * 0.0005):
         raise PhotonCountNotPreservedAfterShiftError
-
-    return gal
+    
+    return gal, np.abs(current_count - input_count)
 
 
 def prints(line, f):
@@ -320,9 +323,11 @@ def shift_wavebands(galaxy, shift_vectors, shift_method, b_size, template_color)
         vcells = label_vornoi_cells(galaxy.images(template_color), points)
     
     for color, vector in shift_vectors.items():
-        if vector is not None:
-            shifted_imgs.update({color: shift_img(galaxy.images(color), vector, shift_method, vcells = vcells)})    
-            prints('Shifted waveband {} by vector {}'.format(color, tuple(vector)), output)
+         if vector is not None:
+            org_count = np.sum(galaxy.images(color))
+            img, count_diff = shift_img(galaxy.images(color), vector, shift_method, vcells = vcells)    
+            shifted_imgs.update({color: img})    
+            prints('Shifted waveband {} by vector {} and had a photon error of {} out of {}'.format(color, tuple(vector), count_diff, org_count), output)
     
     return shifted_imgs, vcells
 
@@ -360,7 +365,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
 
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, save_star_residuals, star_class_perc, min_wavebands, save_shift_residuals, shift_method, cycle_count, sp_path):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, save_star_residuals, min_wavebands, save_shift_residuals, shift_method, cycle_count, sp_path):
     
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
@@ -375,7 +380,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 
     try:
         template_color, template_stars = find_template_gal_and_stars(galaxy, min_stars_template)
-        #template_image_cpy = np.copy(galaxy.images(template_color)) 
+        template_img_cpy = np.copy(galaxy.images(template_color)) 
     except NoViableTemplateError:
         prints('No viable template could be found', output)
         output.close()
@@ -432,14 +437,14 @@ if __name__ == '__main__':
     parser.add_argument('-border_size', default = 0.1, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
     parser.add_argument('-shift_method', default = 'gradient', choices = ['constant', 'gradient'], help = 'Controls the method in which sub-pixel shifts are handled.  If "constant" then it is assumed that the photon count across a pixel is of even density.  If "gradient" then an estimation is done of how the photons are dispersed across the image and a shift is done using that estimation.')
     parser.add_argument('-save_type', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
-    parser.add_argument('-min_stars_template', default = 5, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
+    parser.add_argument('-min_stars_template', default = 4, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
     parser.add_argument('-min_stars_all', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
     parser.add_argument('-save_originals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the original images are saved as part of the output.  Default is false.')
     parser.add_argument('-save_star_residuals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves images comparing each star in to the same star in each waveband, this should be used to show that the stars are correctly cetnered.')
     parser.add_argument('-save_shift_residuals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Saves a residual image of the output shifted shifted back the opposite vector it was shifted and the original image.')
     parser.add_argument('-min_wavebands', default = 0, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
     parser.add_argument('-cycle_count', default = 0, type = int, help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
-    parser.add_argument('-cycle_sp_path', default = None, help = 'The path to the local install of SpArcFiRe.  This is only needed if save_cycles_count is not 0.')
+    parser.add_argument('-sp_path', default = '{}/SpArcFiRe/scripts/SpArcFiRe'.format(os.getenv('HOME')), help = 'The path to the local install of SpArcFiRe.  This is only needed if cycles_count is not 0.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -461,8 +466,9 @@ if __name__ == '__main__':
         print 'Cycle count must be a non-negative integer.'
         exit(1)
 
-    if args.cycle_count != 0 and args.cycle_sp_path is None:
-        print 'The path to your local install of SpArcFiRe must be given if the cycle count is non-zero.'
+    if args.cycle_count != 0 and not os.path.exists(args.sp_path):
+        print args.sp_path
+        print 'The path to your local install of SpArcFiRe install is not valid.'
         exit(1)
     
     # if the output directory does not exist then create it
@@ -484,10 +490,10 @@ if __name__ == '__main__':
             print 'Failed to load {}'.format(gal)
             continue
         try:
-            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.save_star_residuals, args.star_class_perc, args.min_wavebands, args.save_shift_residuals, args.shift_method, args.cycle_count, args.cycle_sp_path)
+            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.save_star_residuals, args.min_wavebands, args.save_shift_residuals, args.shift_method, args.cycle_count, args.sp_path)
             print
 
-        except IndexError as e:    
+        except NoError as e:    
             print 'Failed to shift', gal.name
     
     for path in glob.glob('core.*'):
