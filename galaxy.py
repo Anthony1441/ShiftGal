@@ -62,6 +62,11 @@ class Galaxy:
             img[0].data = np.pad(img[0].data, b_size, 'constant')
             img[0].header['CRPIX1'] += b_size
             img[0].header['CRPIX2'] += b_size
+    
+    def close(self):
+        for gal in self.gal_dict.values():
+            gal.close()
+
 
 class Star:
 

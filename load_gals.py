@@ -9,6 +9,26 @@ from galaxy import Star
 
 class SextractorError(Exception): pass
 
+def save_fits(img, path):
+    fits.HDUList([fits.PrimaryHDU(data = img)]).writeto(path, overwrite = True)
+
+
+def get_seg_img(img):
+    """Runs Source Extractor on the given FITS image and
+       returns the segmenation image"""
+    
+    save_fits(img, 'temp.fits')
+    proc = subprocess.Popen(['./sex', 'temp.fits', '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', 'temp_seg.fits', '-CATALOG_NAME', 'temp_seg.txt'], stderr = subprocess.PIPE)
+    out, err = proc.communicate()
+    if proc.wait() != 0: raise SextractorError
+    seg = fits.open('temp_seg.fits', ignore_missing_end = True)
+    seg_img = seg[0].data
+    seg.close()
+    os.remove('temp_seg.fits')
+    os.remove('temp_seg.txt')
+    os.remove('temp.fits')
+    return seg_img
+
 
 def get_sextractor_points(path):
     """Runs the sextractor on the given FITS image, returns
