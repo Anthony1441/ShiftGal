@@ -13,10 +13,8 @@ import load_gals
 import find_center
 import random
 import testing
-from skimage.feature import peak_local_max
-from scipy.spatial import cKDTree
 from collections import OrderedDict
-from scipy import ndimage 
+import cv2
 
 class NoViableTemplateError(Exception): pass
 
@@ -25,8 +23,6 @@ class NoStarsFitError(Exception): pass
 class StarsNotWithinSigmaError(Exception): pass
 
 class PhotonCountNotPreservedAfterShiftError(Exception): pass
-
-class RangeConstantError(Exception): pass
 
 # used to see errors when testing
 class NoError(Exception): pass
@@ -129,146 +125,22 @@ def average_vector(m_src, m_trg, maxsigma = 1):
     return avg
 
 
-def label_vornoi_cells(img, points):
-    """Finds the stars in the img, then creates a Vornoi diagram around those stars.
-       Returns an array of the same size as the image with a number representing each label."""
-    tree = cKDTree(points)
-    xx, yy = np.meshgrid(np.linspace(0, img.shape[1] - 1, img.shape[1]), np.linspace(0, img.shape[0] - 1, img.shape[0]))
-    xy = np.c_[xx.ravel(), yy.ravel()]
-    return tree.query(xy)[1].reshape(*img.shape)
-
-
-def normalize_gradient_by_cell(grad, cells, range_const):
-    """Normalizes each labeled cell in the gradient to (1 - (1/const), 1 + (1/const))"""
-    for lbl in np.unique(cells):
-        
-        try: grad[(cells == lbl) & (grad < 0)] /= abs(np.min(grad[(cells == lbl) & (grad < 0)]) * range_const)
-        except: pass
-        try: grad[(cells == lbl) & (grad > 0)] /= abs(np.max(grad[(cells == lbl) & (grad > 0)]) * range_const)
-        except: pass
-
-    return grad + 1
-
-
-def find_optimal_range_const(gal, vcells, class_prob = 0.06):
-    """Finds the optimal range const on the template galaxy"""
-    print 'Calculating optimal grandient constant...'
-    try:
-        seg_img = load_gals.get_seg_img(gal)
-        gal_val = seg_img[int(gal.shape[0] / 2), int(gal.shape[1] / 2)]
-        gal_inds = (seg_img == gal_val)
-
-        org_stars, star_diffs = [], []
-        p = 'temp.fits'
-        load_gals.save_fits(gal, p)
-
-        # load the unshifted image stars
-        for s in load_gals.get_sextractor_points(p):
-            if s.class_prob > class_prob:
-                try: org_stars.append(find_center.estimate_center(gal, s))
-                except: pass
-        
-        # try different constants on the worse case scenario
-        ranges = [3, 4, 5, 6, 7, 8, 9, 11, 13, 15, 18, 21, 24, 30, 100]
-        vec, nvec = np.array((0.5, 0.5)), np.array((-0.5, -0.5))
-        for r in ranges:
-            img = np.copy(gal)
-            img = shift_img(img, vec, 'gradient', vcells, r)[0]
-            img = shift_img(img, nvec, 'gradient', vcells, r)[0]
-            
-            load_gals.save_fits(img, p)
-            stars = []
-            for s in load_gals.get_sextractor_points(p):
-                if s.class_prob > class_prob:
-                    try: stars.append(find_center.estimate_center(img, s))
-                    except: pass
-            src, trg = find_like_points(org_stars, stars)
-            total_dist = sum([np.sqrt((s.x + vec[0] - t.x)**2 + (s.y + vec[0] - t.y)**2) for s, t in zip(src, trg)])
-            star_diffs.append(np.nan if len(src) == 0 else (total_dist / len(src)) + 10 * (np.mean(np.abs((gal - img)[gal_inds]))))
-            # if the min hasnt changed in 3 iterations then assume the
-            # actual min has been found
-            if np.argmin(np.array(star_diffs)) < len(star_diffs) - 3: break
-
-        os.remove(p)
-        return ranges[np.argmin(np.array(star_diffs))] 
-
-    except:
-        if os.path.exists('temp.fits'): os.remove('temp.fits')
-        raise RangeConstantError        
-
-def shift_img(gal, vector, method, vcells = None, range_const = 15, check_count = True, edge_order = 2):
-    """shifts the image by the 2D vector given"""
-     
+def shift_img(gal, vector, upscale_factor = 50, check_count = True):
+    
     if vector[0] == 0 and vector[1] == 0: return gal, 0
-    input_count = np.sum(gal)
-    # shift the integer part of the axis
-    gal = np.roll(gal, int(vector[0]), axis = 1)
-    gal = np.roll(gal, int(vector[1]), axis = 0)
-
-    x_rem = vector[0] % int(vector[0]) if abs(vector[0]) >= 1 else vector[0] + abs(int(vector[0]))
-    y_rem = vector[1] % int(vector[1]) if abs(vector[1]) >= 1 else vector[1] + abs(int(vector[1]))
     
-    if method == 'constant':   
-        x_shift = np.roll(gal, int(np.sign(x_rem)), axis = 1)
-        gal = gal - abs(x_rem) * gal + abs(x_rem) * x_shift
-        y_shift = np.roll(gal, int(np.sign(y_rem)), axis = 0)
-        gal = gal - abs(y_rem) * gal + abs(y_rem) * y_shift
+    upscale = cv2.resize(gal, dsize = tuple(np.array(gal.shape) * upscale_factor), interpolation = cv2.INTER_LANCZOS4)
+    upscale = np.roll(upscale, int(vector[0] * upscale_factor), axis = 1)
+    upscale = np.roll(upscale, int(vector[1] * upscale_factor), axis = 0)
+    upscale = cv2.resize(upscale, dsize = tuple(gal.shape), interpolation = cv2.INTER_LANCZOS4)
     
-    elif method == 'gradient':
-        grad = np.gradient(gal, edge_order = edge_order)
-        x_shift = np.roll(gal, int(np.sign(x_rem)), axis = 1)
-        x_shift2 = np.roll(gal, int(np.sign(x_rem)) * 2, axis = 1)
-        # Have the gradient be positive in the direction of the shift
-        #   so that more photons to be moved in the direction of the shift
-        # For example, if moving to the left then the pixels on the right side of the star
-        # *should* have more photons on the left pixels rather than the right, and the
-        # opposite for the left side, so we want the gradient to be positive in the direction of the shift
-        grad_x = grad[1] if x_rem > 0 else grad[1] * -1
-        grad_x = normalize_gradient_by_cell(grad_x, vcells, range_const)
-        
-        # Multiply by the shift so that it is scaled down
-        grad_x = grad_x * abs(x_rem)
-        
-        # if shifting by nearly a pixel it is possible that
-        # some photons will need to be put over 1 away, for example 0.9 += 0.2 has some
-        # a possible 1.1 pixel shift
-        grad_shift_x = np.roll(grad_x, int(np.sign(x_rem)), axis = 1)
-        grad_shift_x[grad_shift_x > 1] = 1
-        grad_shift2_x = np.roll(grad_x - 1, int(np.sign(x_rem)) * 2, axis = 1)
-        
-        # remove photons from current location
-        gal -= (grad_x * gal)
-        # add to adjectent pixel 
-        gal += (grad_shift_x * x_shift)
-        # deal with shifts > 1 pixel by moving just the excess to 2 pixels adjacent
-        gal[grad_shift2_x > 0] += (grad_shift2_x * x_shift2)[grad_shift2_x > 0]
-        
-
-        grad = np.gradient(gal, edge_order = edge_order)
-        y_shift = np.roll(gal, int(np.sign(y_rem)), axis = 0)
-        y_shift2 = np.roll(gal, int(np.sign(y_rem)) * 2, axis = 0)
-
-        grad_y = grad[0] if y_rem > 0 else grad[0] * -1
-        grad_y = normalize_gradient_by_cell(grad_y, vcells, range_const)
-        grad_y = grad_y * abs(y_rem)
-        
-        grad_shift_y = np.roll(grad_y, int(np.sign(y_rem)), axis = 0)
-        grad_shift_y[grad_shift_y > 1] = 1
-        grad_shift2_y = np.roll(grad_y - 1, int(np.sign(y_rem)) * 2, axis = 0)
-
-        gal -= (grad_y * gal)
-        gal += (grad_shift_y * y_shift)
-        gal[grad_shift2_y > 0] += (grad_shift2_y * y_shift2)[grad_shift2_y > 0]
-
-    else:
-        print 'Invalid shift method chosen, skipping sub-pixel shift'
-    
-    current_count = np.sum(gal)
+    input_count, current_count = np.sum(gal), np.sum(upscale)
     # check to make sure that the output photon count is within 0.05% of the original
     if check_count and (current_count > input_count + input_count * 0.0005 or current_count < input_count - input_count * 0.0005):
+        print input_count, current_count
         raise PhotonCountNotPreservedAfterShiftError
     
-    return gal, np.abs(current_count - input_count)
+    return upscale, np.abs(current_count - input_count)
 
 
 def prints(line, f):
@@ -352,34 +224,18 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
     return color_vectors
 
 
-def shift_wavebands(galaxy, shift_vectors, shift_method, b_size, template_color):
+def shift_wavebands(galaxy, shift_vectors, template_color):
     """Returns a dict of the shifted images (only those that a vector was found for)"""
+    
     shifted_imgs = OrderedDict()
-    # calculate the Vornoi diagram of the template galaxy to use for the remaining wavebands
-    vcells = None
-    range_const = None
-
-    if shift_method == 'gradient':
-        center_pixel, min_dist = int(len(galaxy.images('g')) / 2.0), len(galaxy.images('g')) * 0.15
-        points = [[p.x + b_size, p.y + b_size] for p in galaxy.all_stars_dict[template_color]]
-        new_points = []
-        for p in points:
-            dist = np.sqrt((p[0] - center_pixel)**2 + (p[1] - center_pixel)**2)
-            if dist > min_dist or dist < 10:
-                new_points.append(p)
-        points = np.array(new_points)
-        vcells = label_vornoi_cells(galaxy.images(template_color), points)
-        range_const = find_optimal_range_const(galaxy.images(template_color), vcells)
-        prints('Optimal grandient constant is {}'.format(range_const), output)
-
     for color, vector in shift_vectors.items():
          if vector is not None:
             org_count = np.sum(galaxy.images(color))
-            img, count_diff = shift_img(galaxy.images(color), vector, shift_method, vcells, range_const)    
+            img, count_diff = shift_img(galaxy.images(color), vector)    
             shifted_imgs.update({color: img})    
             prints('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), count_diff, org_count), output)
     
-    return shifted_imgs, vcells, range_const
+    return shifted_imgs
 
 
 def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_originals):
@@ -415,7 +271,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
 
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands,shift_method, run_tests, sp_path):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands, run_tests, sp_path):
     
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
@@ -448,30 +304,13 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         shutil.rmtree(p)
     
     else:  
-        b_size = int(len(galaxy.images('g')) * border_size)
-        galaxy.add_borders(b_size)
-        template_img_cpy = galaxy.images(template_color)
-        shift_imgs, vcells, range_const = shift_wavebands(galaxy, shift_vectors, shift_method, b_size, template_color)    
+        galaxy.add_borders(int(len(galaxy.images('g')) * border_size))
+        shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color)    
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
      
-        # for testing save a residual of the gradient and linear
-        img_const, img_grad = np.copy(template_img_cpy), np.copy(template_img_cpy)
-        vec, nvec = np.array((0.5, 0.5)), np.array((-0.5, -0.5))
-        img_const = shift_img(img_const, vec, 'constant')[0]
-        img_const = shift_img(img_const, nvec, 'constant')[0]
-        img_grad = shift_img(img_grad, vec, 'gradient', vcells, range_const)[0]
-        img_grad = shift_img(img_grad, nvec, 'gradient', vcells, range_const)[0]
-        load_gals.save_fits(np.abs(template_img_cpy - img_const), os.path.join(p, 'const_residual.fits'))
-        load_gals.save_fits(np.abs(template_img_cpy - img_grad), os.path.join(p, 'grad_residual.fits'))
-
         if run_tests:
             prints('Running tests...', output)
-            
-            if shift_method == 'constant':
-                testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), shift_method, None, 10, sp_path)
-            elif shift_method == 'gradient':
-                testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), shift_method, vcells, 10, sp_path)
-                plt.imsave(os.path.join(p, 'testing', 'vornoi_diagram.png'), vcells)
+            testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), 10, sp_path)
         
         output.close()
 
@@ -484,7 +323,6 @@ if __name__ == '__main__':
     parser.add_argument('out_dir', help = 'A directory for the output images.  If it does not exist then it will be created, if it already exists then all files in it will be deleted.')
     parser.add_argument('-star_class_perc', default = 0.65, type = float, help = 'The minimum probablity confidence needed of the sextractor classification that the object is a star.  Value should be in range (0,1), default is 0.7.')
     parser.add_argument('-border_size', default = 0.025, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
-    parser.add_argument('-shift_method', default = 'gradient', choices = ['constant', 'gradient'], help = 'Controls the method in which sub-pixel shifts are handled.  If "constant" then it is assumed that the photon count across a pixel is of even density.  If "gradient" then an estimation is done of how the photons are dispersed across the image and a shift is done using that estimation.')
     parser.add_argument('-save_type', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
     parser.add_argument('-min_stars_template', default = 3, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
     parser.add_argument('-min_stars_all', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
@@ -530,10 +368,10 @@ if __name__ == '__main__':
             print 'Failed to load {}'.format(gal)
             continue
         try:
-            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.min_wavebands, args.shift_method, args.run_tests, args.sp_path)
+            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.min_wavebands, args.run_tests, args.sp_path)
             print
 
-        except Exception as e:    
+        except NoError as e:    
             print 'Failed to shift', gal.name
     
     for path in glob.glob('core.*'):
