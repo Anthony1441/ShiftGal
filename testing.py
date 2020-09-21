@@ -21,25 +21,20 @@ def run_sparcfire(org, img_data, irange, outdir, sp_path):
     """Runs SpArcFiRe on the org and ima_data, then returns the difference in galaxy center for org and img_data"""
     
     try:
-        sf_in = os.path.join(outdir, 'sf_in')
-        sf_tmp = os.path.join(outdir, 'sf_tmp')
-        sf_out = os.path.join(outdir, 'sf_out')
-
-        os.mkdir(sf_in)
-        os.mkdir(sf_tmp)
-        os.mkdir(sf_out)
+        sf_in, sf_tmp, sf_out = os.path.join(outdir, 'sf_in'), os.path.join(outdir, 'sf_tmp'), os.path.join(outdir, 'sf_out')
+        os.mkdir(sf_in); os.mkdir(sf_tmp); os.mkdir(sf_out)
         
         for i in range(irange):
             os.mkdir(os.path.join(sf_in, str(i)))
             os.mkdir(os.path.join(sf_tmp, str(i)))
             os.mkdir(os.path.join(sf_out, str(i)))
-            fits.HDUList([fits.PrimaryHDU(data = img_data[i])]).writeto(os.path.join(sf_in, str(i), 'temp.fits'))
+            load_gals.save_fits(img_data[i], os.path.join(sf_in, str(i), 'temp.fits'))
        
         # get starting image center
         os.mkdir(os.path.join(sf_in, 'org'))
         os.mkdir(os.path.join(sf_tmp, 'org'))
         os.mkdir(os.path.join(sf_out, 'org'))
-        fits.HDUList([fits.PrimaryHDU(data = org)]).writeto(os.path.join(sf_in, 'org', 'temp.fits'))
+        load_gals.save_fits(org, os.path.join(sf_in, 'org', 'temp.fits'))
         proc = subprocess.Popen([sp_path, '-convert-FITS', os.path.join(sf_in, 'org'), os.path.join(sf_tmp, 'org'), os.path.join(sf_out, 'org'), '-generateFitQuality', '0', '-writeBulgeMask', '1']) 
 
         # run each cycled image in parallel
@@ -65,9 +60,7 @@ def run_sparcfire(org, img_data, irange, outdir, sp_path):
     finally:
         # clean up all output
         try:
-            shutil.rmtree(sf_in)
-            shutil.rmtree(sf_tmp)
-            shutil.rmtree(sf_out)
+            shutil.rmtree(sf_in); shutil.rmtree(sf_tmp); shutil.rmtree(sf_out)
             for p in os.listdir('.'):
                 if '_settings.txt' in p or p in ('SpArcFiRe-stdin.stdin.txt', 'arc2csv.log', 'galaxy_arcs.tsv'):
                     os.remove(p)
@@ -130,10 +123,9 @@ def test_single_shift(outdir, img, sp_path):
         if s.class_prob > class_prob:
             try: org_stars.append(find_center.estimate_center(org, s))
             except: pass
-    os.remove(p)
 
     for i in range(len(r)):
-        fits.HDUList([fits.PrimaryHDU(data = cycle_imgs[i])]).writeto(p)    
+        load_gals.save_fits(cycle_imgs[i], p)
         stars = []
         for s in load_gals.get_sextractor_points(p):
             if s.class_prob > class_prob:
@@ -142,7 +134,7 @@ def test_single_shift(outdir, img, sp_path):
         src, trg = shift_gal.find_like_points(org_stars, stars)
         total_dist = sum([np.sqrt((s.x + r[i] - t.x)**2 + (s.y + r[i]- t.y)**2) for s, t in zip(src, trg)])
         star_diffs.append(np.nan if len(src) == 0 else total_dist / len(src))
-        os.remove(p)
+    os.remove(p)
 
     plt.figure()
     plt.plot(dist, star_diffs)
@@ -164,18 +156,7 @@ def test_double_shift(outdir, img, sp_path):
     cycle_imgs, mean_diff, mean_diff_gal, mean_diff_bg = [], [], [], []
     org = np.copy(img)
     
-    # run sextractor on image to mask out stars
-    load_gals.save_fits(org, os.path.join(outdir, 'seg_temp.fits'))
-    proc = subprocess.Popen(['./sex', os.path.join(outdir, 'seg_temp.fits'), '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', os.path.join(outdir, 'seg_out.fits'), '-CATALOG_NAME', os.path.join(outdir, 'temp.txt')], stderr = subprocess.PIPE)
-    out, err = proc.communicate()
-    if proc.wait() != 0: raise load_gals.SextractorError
-    seg = fits.open(os.path.join(outdir, 'seg_out.fits'), ignore_missing_end = True)
-    seg_img = seg[0].data
-    seg.close()
-    os.remove(os.path.join(outdir, 'seg_out.fits'))
-    os.remove(os.path.join(outdir, 'seg_temp.fits'))
-    os.remove(os.path.join(outdir, 'temp.txt'))
-    
+    seg_img = load_gals.get_seg_img(org)
     gal_val = seg_img[int(seg_img.shape[0] / 2.0), int(seg_img.shape[1] / 2.0)]
     
     for delta in r:
@@ -239,20 +220,20 @@ def test_double_shift(outdir, img, sp_path):
     for i in range(len(cycle_imgs)):
         plt.figure()
         plt.scatter(org.flatten(), np.abs(org - cycle_imgs[i]).flatten(), s = 2)
-        plt.title('Initial Pixel Brightness vs Resulting Error ({}, {})'.format(r[i], r[i]))
-        plt.xlabel('Initial Brightness')
-        plt.ylabel('Difference in Brightness')
+        plt.title('Initial Flux Value vs Resulting Error ({}, {})'.format(r[i], r[i]))
+        plt.xlabel('Initial Flux')
+        plt.ylabel('Absolute Error in Flux')
         plt.ylim(-1, 12)
-        plt.savefig(os.path.join(outdir, 'linear_brightness_error_{}.png'.format(r[i])))
+        plt.savefig(os.path.join(outdir, 'cycle_flux_pixel_error_{}.png'.format(r[i])))
         
         plt.figure()
         cutoff = 5
         plt.scatter(org[org > cutoff].flatten(), 100 * np.abs(np.abs(org - cycle_imgs[i]) / org)[org > cutoff].flatten(), s = 2)
-        plt.title('Initial Pixel Brightness vs Resulting Error ({}, {})'.format(r[i], r[i]))
-        plt.xlabel('Initial Brightness')
-        plt.ylabel('Percent Difference in Brightness')
+        plt.title('Initial Flux Value vs Resulting Error ({}, {})'.format(r[i], r[i]))
+        plt.xlabel('Initial Flux')
+        plt.ylabel('Percent Error in Flux')
         plt.ylim(-3, 60)
-        plt.savefig(os.path.join(outdir, 'linear_percent_brightness_error_{}.png'.format(r[i])))
+        plt.savefig(os.path.join(outdir, 'cycle_flux_pixel_error_{}.png'.format(r[i])))
     '''
     try:
         pos = run_sparcfire(org, cycle_imgs, 10, outdir, sp_path)
@@ -278,15 +259,14 @@ def test_double_shift(outdir, img, sp_path):
         print 'SpArcFiRe error encoutnered, continuing...'
     '''
     
-    star_diffs = []
+    org_stars, star_diffs = [], []
     p = os.path.join(outdir, 'temp.fits')
     load_gals.save_fits(org, p)
-    org_stars = []
+    
     for s in load_gals.get_sextractor_points(p):
         if s.class_prob > class_prob:
             try: org_stars.append(find_center.estimate_center(org, s))
             except: pass
-    os.remove(p)
 
     for i in range(len(r)):
         load_gals.save_fits(cycle_imgs[i], p)
@@ -298,7 +278,7 @@ def test_double_shift(outdir, img, sp_path):
         src, trg = shift_gal.find_like_points(org_stars, stars)
         total_dist = sum([np.sqrt((i.x - j.x)**2 + (i.y - j.y)**2) for i, j in zip(src, trg)])
         star_diffs.append(total_dist / len(src))
-        os.remove(p)
+    os.remove(p)
 
     plt.figure()
     plt.plot(dist, star_diffs)
@@ -315,61 +295,48 @@ def test_random_shifts(outdir, img, cycles, sp_path):
         
     print '\nRunning random shift tests...\n'
 
-    outdir = os.path.abspath(outdir)
-    
-    try:
-        if os.path.exists(outdir):
-            shutil.rmtree(outdir)
-        os.mkdir(outdir)
-    except:
-        print 'Error creating {}, smearing not tested.'.format(outdir)
-        return
-    
     org = np.copy(img)
-    '''
-    sum_diff, seg_sum_diff = [], []
-    
-    # run sextractor on image to mask out stars
-    fits.HDUList([fits.PrimaryHDU(data = org)]).writeto(os.path.join(outdir, 'seg_temp.fits'))   
-    proc = subprocess.Popen(['./sex', os.path.join(outdir, 'seg_temp.fits'), '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', os.path.join(outdir, 'seg_out.fits'), '-CATALOG_NAME', os.path.join(outdir, 'temp.txt')], stderr = subprocess.PIPE)
-    out, err = proc.communicate()
-    if proc.wait() != 0: raise load_gals.SextractorError
-    seg = fits.open(os.path.join(outdir, 'seg_out.fits'), ignore_missing_end = True)
-    seg_img = seg[0].data
-    seg.close()
-    os.remove(os.path.join(outdir, 'seg_out.fits'))
-    os.remove(os.path.join(outdir, 'seg_temp.fits'))
-    os.remove(os.path.join(outdir, 'temp.txt'))
-    
+    mean_diff, mean_diff_gal, mean_diff_bg, cycle_imgs = [], [], [], []
+    seg_img = load_gals.get_seg_img(org)
     gal_val = seg_img[int(seg_img.shape[0] / 2.0), int(seg_img.shape[1] / 2.0)]
-    cycle_imgs = []
-    
     
     for i in range(cycles):
         vector = np.array([-1.0, -1.0]) + 2 * np.random.random(2)
         print 'Running shift {}, cycle {}'.format(vector, i + 1)
-        img = shift_gal.shift_img(img, vector, shift_method, vcells, check_count = False)[0]
-        img = shift_gal.shift_img(img, vector * -1, shift_method, vcells, check_count = False)[0]
-        sum_diff.append(100 * np.sum(np.abs(org - img)) / np.sum(org))
+        img = shift_gal.shift_img(img, vector)[0]
+        img = shift_gal.shift_img(img, vector * -1)[0]
+        diff = np.abs(org - img)
+        mean_diff.append(np.mean(diff))
+        mean_diff_gal.append(np.mean(diff[seg_img == gal_val]))
+        mean_diff_bg.append(np.mean(diff[seg_img == 0]))
         cycle_imgs.append(np.copy(img))
 
     print 'Saving graphs...'
     plt.figure()
-    plt.plot(np.arange(1, cycles + 1), sum_diff)
+    plt.plot(np.arange(1, cycles + 1), mean_diff)
     plt.xlim(0, cycles + 1)
-    plt.title('Difference in Count as a % of Total Original Count')
+    plt.title('Mean Absolute Flux Error')
     plt.xlabel('Cycle')
-    plt.ylabel('Percent')
-    plt.savefig(os.path.join(outdir, 'sum_diff.png'))
+    plt.ylabel('Mean Flux Error')
+    plt.savefig(os.path.join(outdir, 'random_mean_diff.png'))
     
     plt.figure()
-    plt.plot(np.arange(1, cycles + 1), seg_sum_diff)
+    plt.plot(np.arange(1, cycles + 1), mean_diff_gal)
     plt.xlim(0, cycles + 1)
-    plt.title('Difference in Count as a % of Total Original Count (Masked)')
+    plt.title('Mean Absolute Flux Error (Galaxy Only)')
     plt.xlabel('Cycle')
-    plt.ylabel('Percent')
-    plt.savefig(os.path.join(outdir, 'masked_sum_diff.png'))
+    plt.ylabel('Mean Flux Error')
+    plt.savefig(os.path.join(outdir, 'random_mean_diff_galaxy.png'))
     
+    plt.figure()
+    plt.plot(np.arange(1, cycles + 1), mean_diff_bg)
+    plt.xlim(0, cycles + 1)
+    plt.title('Mean Absolute Flux Error (Background Only)')
+    plt.xlabel('Cycle')
+    plt.ylabel('Mean Flux Error')
+    plt.savefig(os.path.join(outdir, 'random_mean_diff_background.png'))
+    
+    '''
     try:
         pos = run_sparcfire(org, cycle_imgs, cycles, outdir, sp_path)
         pos_diff = [np.sqrt((pos[0][0] - pos[i][0])**2 + (pos[0][1] - pos[i][1])**2) for i in range(len(pos))]
@@ -394,15 +361,15 @@ def test_random_shifts(outdir, img, cycles, sp_path):
     except:
         print 'SpArcFiRe error encountered, continuing...'
 
-    
+    '''
     star_diffs = []
     p = os.path.join(outdir, 'temp.fits')
-    fits.HDUList([fits.PrimaryHDU(data = org)]).writeto(p)
+    load_gals.save_fits(org, p)
     org_stars = [s for s in load_gals.get_sextractor_points(p) if s.class_prob > 0.09]
     os.remove(p)
     
     for i in range(cycles):
-        fits.HDUList([fits.PrimaryHDU(data = cycle_imgs[i])]).writeto(p)    
+        load_gals.save_fits(cycle_imgs[i], p)
         stars = [s for s in load_gals.get_sextractor_points(p) if s.class_prob > 0.09]
         src, trg = shift_gal.find_like_points(org_stars, stars)
         total_dist = sum([np.sqrt((i.x - j.x)**2 + (i.y - j.y)**2) for i, j in zip(src, trg)])
@@ -412,14 +379,73 @@ def test_random_shifts(outdir, img, cycles, sp_path):
     plt.figure()
     plt.plot(np.arange(1, cycles + 1), star_diffs)
     plt.xlim(0, cycles + 1)
-    plt.title('Average Difference in Star Position')
+    plt.title('Mean Difference in Star Location')
     plt.xlabel('Cycle')
-    plt.ylabel('Difference in Pixels')
-    plt.savefig(os.path.join(outdir, 'star_diff.png'))
-    '''
+    plt.ylabel('Mean Location Error')
+    plt.savefig(os.path.join(outdir, 'random_star_diff.png'))
+
+
+def test_upscale_factor(outdir, img):
+    
+    #img = img[90:-90, 90:-90]
+    for vec in np.random.random((1, 2)):
+        print 'Testing shift vector of {}'.format(vec)
+        upscale_imgs = []
+        upscales = np.arange(100, 101, 10)
+        #upscales = (10, 20, 40, 80, 160, 300)
+        for i in upscales:
+            print 'Running upscale factor {}'.format(i)
+            img_cpy = np.copy(img)
+            print img_cpy.shape
+            img_cpy = shift_gal.shift_img(img_cpy, vec, i, check_count = False)[0]
+            upscale_imgs.append(np.copy(img_cpy))
+            print img_cpy.shape
+        org_stars, star_diffs = [], []
+        p = os.path.join(outdir, 'temp.fits')
+        load_gals.save_fits(img, p)
+        for s in load_gals.get_sextractor_points(p):
+            if s.class_prob > class_prob:
+                try: org_stars.append(find_center.estimate_center(img, s))
+                except: pass
+        os.remove(p)
+        for up_img in upscale_imgs:
+            load_gals.save_fits(up_img, p)
+            stars = []
+            for s in load_gals.get_sextractor_points(p):
+                if s.class_prob > class_prob:
+                    try: stars.append(find_center.estimate_center(up_img, s))
+                    except: pass
+            
+            src, trg = shift_gal.find_like_points(org_stars, stars)
+            total_dist = sum([np.sqrt((s.x + vec[0] - t.x)**2 + (s.y + vec[1] - t.y)**2) for s, t in zip(src, trg)])
+            star_diffs.append(total_dist / len(src))
+            os.remove(p)
+
+        plt.figure()
+        plt.plot(upscales, star_diffs)
+        plt.title('Mean Difference in Star Location {}'.format(vec))
+        plt.ylim(0, 0.02)
+        plt.xlabel('Upscale Factor')
+        plt.ylabel('Mean Location Error')
+        plt.savefig(os.path.join(outdir, 'upscale_single_shift_star_diff_{}.png'.format(vec)))
+
 
 def test_shifts(outdir, img, random_cycles, sp_path):
+    """Runs various tests measureing flux and positional error"""
+
+    outdir = os.path.abspath(outdir)
     
+    try:
+        if os.path.exists(outdir):
+            shutil.rmtree(outdir)
+        os.mkdir(outdir)
+    except:
+        print 'Error creating {}, testing not ran.'.format(outdir)
+        return
+    
+    test_upscale_factor(outdir, img)
+    ''' 
+    test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
     test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
     x, y = test_double_shift(outdir, np.copy(img), sp_path)
     x2, y2 = test_single_shift(outdir, np.copy(img), sp_path)
@@ -432,3 +458,4 @@ def test_shifts(outdir, img, random_cycles, sp_path):
     plt.xlabel('Shift Distance in Pixels')
     plt.ylabel('Mean Location Error')
     plt.savefig(os.path.join(outdir, 'star_pos_both.png'))
+    '''

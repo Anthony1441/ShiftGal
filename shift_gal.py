@@ -24,6 +24,8 @@ class StarsNotWithinSigmaError(Exception): pass
 
 class PhotonCountNotPreservedAfterShiftError(Exception): pass
 
+class ImageTooLargeError(Exception): pass
+
 # used to see errors when testing
 class NoError(Exception): pass
 
@@ -125,22 +127,35 @@ def average_vector(m_src, m_trg, maxsigma = 1):
     return avg
 
 
-def shift_img(gal, vector, upscale_factor = 50, check_count = True):
+def shift_img(gal, vector, upscale_factor = 10, check_count = True):
     
     if vector[0] == 0 and vector[1] == 0: return gal, 0
+    padding = 0
+    # if the image is large enough then its area is greater than 2^31 pixels which causes an overflow error
+    # to solve this we pad the image so that it is greater than 2^32 and it believes that it is positive
+    size = gal.shape[0] * upscale_factor
+    if (size**2) % (2**31) >= 0 and (size**2) % (2**32) >= 2**31:
+        while (size**2) % (2**31) >= 0 and (size**2) % (2**32) >= 2**31:
+            size += 10
+        padding = int((size - gal.shape[0] * upscale_factor) / (2 * upscale_factor)) + 1
+        gal = np.pad(gal, padding, 'constant')
+        print 'Temporarily resizing image to', gal.shape
     
     upscale = cv2.resize(gal, dsize = tuple(np.array(gal.shape) * upscale_factor), interpolation = cv2.INTER_LANCZOS4)
-    upscale = np.roll(upscale, int(vector[0] * upscale_factor), axis = 1)
-    upscale = np.roll(upscale, int(vector[1] * upscale_factor), axis = 0)
+    upscale = np.roll(upscale, int(round(vector[0] * upscale_factor)), axis = 1)
+    upscale = np.roll(upscale, int(round(vector[1] * upscale_factor)), axis = 0)
     upscale = cv2.resize(upscale, dsize = tuple(gal.shape), interpolation = cv2.INTER_LANCZOS4)
-    
+
     input_count, current_count = np.sum(gal), np.sum(upscale)
     # check to make sure that the output photon count is within 0.05% of the original
     if check_count and (current_count > input_count + input_count * 0.0005 or current_count < input_count - input_count * 0.0005):
         print input_count, current_count
         raise PhotonCountNotPreservedAfterShiftError
-    
-    return upscale, np.abs(current_count - input_count)
+
+    if padding == 0:
+        return upscale, np.abs(current_count - input_count)
+    else:
+        return upscale[padding : -1 * padding, padding : -1 * padding], np.abs(current_count - input_count)
 
 
 def prints(line, f):
@@ -224,14 +239,14 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
     return color_vectors
 
 
-def shift_wavebands(galaxy, shift_vectors, template_color):
+def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor):
     """Returns a dict of the shifted images (only those that a vector was found for)"""
     
     shifted_imgs = OrderedDict()
     for color, vector in shift_vectors.items():
          if vector is not None:
             org_count = np.sum(galaxy.images(color))
-            img, count_diff = shift_img(galaxy.images(color), vector)    
+            img, count_diff = shift_img(galaxy.images(color), vector, upscale_factor)    
             shifted_imgs.update({color: img})    
             prints('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), count_diff, org_count), output)
     
@@ -271,7 +286,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
 
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands, run_tests, sp_path):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands, run_tests, sp_path, upscale_factor):
     
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
@@ -288,8 +303,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         template_color, template_stars = find_template_gal_and_stars(galaxy, min_stars_template)
     except NoViableTemplateError:
         prints('No viable template could be found', output)
-        output.close()
-        galaxy.close()
+        output.close(); galaxy.close()
         shutil.rmtree(p)
         return
    
@@ -299,13 +313,19 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
     num_viable = len([1 for v in shift_vectors.values() if v is not None])
     if num_viable < min_wavebands:
         print 'Skipping galaxy, not enough viable wavebands ({} of {} needed)'.format(num_viable, min_wavebands)
-        output.close()
-        galaxy.close()
+        output.close(); galaxy.close()
         shutil.rmtree(p)
     
     else:  
         galaxy.add_borders(int(len(galaxy.images('g')) * border_size))
-        shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color)    
+        try:
+            shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor)    
+        except ImageTooLargeError:
+            print 'Input images are too large to be upscaled, skipping galaxy'
+            output.close(); galaxy.close()
+            shutil.rmtree(p)
+            return
+
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
      
         if run_tests:
@@ -328,8 +348,9 @@ if __name__ == '__main__':
     parser.add_argument('-min_stars_all', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
     parser.add_argument('-save_originals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the original images are saved as part of the output.  Default is false.')
     parser.add_argument('-min_wavebands', default = 4, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
+    parser.add_argument('-upscale_factor', default = 60, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation.  The upscale cannot contain more than 2^31 pixels; any factor above 100 is not recommended.')
     parser.add_argument('-run_tests', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
-    parser.add_argument('-sp_path', default = '{}/SpArcFiRe/scripts/SpArcFiRe'.format(os.getenv('HOME')), help = 'The path to the local install of SpArcFiRe.  This is only needed if cycles_count is not 0.')
+    parser.add_argument('-sp_path', default = '{}/scripts/SpArcFiRe'.format(os.getenv('SPARCFIRE_HOME')), help = 'The path to the local install of SpArcFiRe.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -345,6 +366,11 @@ if __name__ == '__main__':
     # check that border_size is valid
     if args.border_size < 0:
         print 'Border size much be a positive value.'
+        exit(1)
+
+    # check that upscale_factor is valid
+    if args.upscale_factor < 10:
+        print 'Upscale factor must be greater than 10'
         exit(1)
     
     # if the output directory does not exist then create it
@@ -368,7 +394,7 @@ if __name__ == '__main__':
             print 'Failed to load {}'.format(gal)
             continue
         try:
-            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.min_wavebands, args.run_tests, args.sp_path)
+            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.min_wavebands, args.run_tests, args.sp_path, args.upscale_factor)
             print
 
         except NoError as e:    
