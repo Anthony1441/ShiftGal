@@ -15,6 +15,7 @@ import random
 import testing
 from collections import OrderedDict
 import cv2
+import multiprocessing
 
 class NoViableTemplateError(Exception): pass
 
@@ -31,8 +32,10 @@ class NoError(Exception): pass
 
 # file used to write output to
 output = None
+tsv_out = None
 
-def filter_stars(src, trg, min_perc_spread_agreement = 0.8, max_star_spread = 10, min_star_spread = 0.1, min_matching_spread = 0.8):
+
+def filter_stars(src, trg, min_perc_spread_agreement = 0.7, max_star_spread = 15, min_star_spread = 0.1, min_matching_spread = 0.8):
     """Takes in a list of target and filters them out based
        on various parameters, assumes that the source has already been filtered"""
     # filter out stars whose x and y spread are not within 
@@ -57,7 +60,7 @@ def filter_stars(src, trg, min_perc_spread_agreement = 0.8, max_star_spread = 10
 
     src, trg = temp_src, temp_trg
     assert len(src) == len(trg)
-    
+
     # filter out stars who have a spread on either a xis that is less
     # than the min_star_spread, should remove stars that are too small to be used
     temp_src, temp_trg = [], []
@@ -68,7 +71,7 @@ def filter_stars(src, trg, min_perc_spread_agreement = 0.8, max_star_spread = 10
     
     src, trg = temp_src, temp_trg
     assert len(src) == len(trg)
-
+    
     # filter out stars whoose matching star has too disimilar
     # spreads (meaning that one is more smeared/bright than the other
     # and the centers are not to be trusted)
@@ -114,7 +117,7 @@ def find_like_points(src, trg, max_dist = 10):
     return m_src, m_trg
 
 
-def average_vector(m_src, m_trg, maxsigma = 1):
+def average_vector(m_src, m_trg, maxsigma = 2):
     """Returns the average vector between the source and target points.
        It excludes points outside of maxsigma * std_dev of the mean."""
     # calculate the vector bettween each star and its source star
@@ -127,9 +130,14 @@ def average_vector(m_src, m_trg, maxsigma = 1):
     return avg
 
 
-def shift_img(gal, vector, upscale_factor = 10, check_count = True):
+def shift_img(gal, vector, upscale_factor, gal_dict, color, check_count = True):
+    """Shifts the image using Lanczos interoplation, updates the image in gal_dict"""    
+    prints('Started processing shift on waveband {}...'.format(color)) 
+    if vector[0] == 0 and vector[1] == 0:
+        gal_dict.update({color: gal}) 
+        prints('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), 0, np.sum(gal)))
+        return
     
-    if vector[0] == 0 and vector[1] == 0: return gal, 0
     padding = 0
     # if the image is large enough then its area is greater than 2^31 pixels which causes an overflow error
     # to solve this we pad the image so that it is greater than 2^32 and it believes that it is positive
@@ -139,7 +147,6 @@ def shift_img(gal, vector, upscale_factor = 10, check_count = True):
             size += 10
         padding = int((size - gal.shape[0] * upscale_factor) / (2 * upscale_factor)) + 1
         gal = np.pad(gal, padding, 'constant')
-        print 'Temporarily resizing image to', gal.shape
     
     upscale = cv2.resize(gal, dsize = tuple(np.array(gal.shape) * upscale_factor), interpolation = cv2.INTER_LANCZOS4)
     upscale = np.roll(upscale, int(round(vector[0] * upscale_factor)), axis = 1)
@@ -149,19 +156,25 @@ def shift_img(gal, vector, upscale_factor = 10, check_count = True):
     input_count, current_count = np.sum(gal), np.sum(upscale)
     # check to make sure that the output photon count is within 0.05% of the original
     if check_count and (current_count > input_count + input_count * 0.0005 or current_count < input_count - input_count * 0.0005):
-        print input_count, current_count
         raise PhotonCountNotPreservedAfterShiftError
+ 
+    prints('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), np.abs(input_count - current_count), input_count))
 
     if padding == 0:
-        return upscale, np.abs(current_count - input_count)
+        gal_dict.update({color: upscale})
     else:
-        return upscale[padding : -1 * padding, padding : -1 * padding], np.abs(current_count - input_count)
+        gal_dict.update({color: upscale[padding : -1 * padding, padding : -1 * padding]})
 
 
-def prints(line, f):
-    """Prints line and saves it to f"""
+def prints(line):
+    """Prints line and saves it to the output"""
     print line
-    f.write(line + '\n')
+    output.write(line + '\n')
+
+
+def tsv_print(*args):
+    """Combines the args, separated by tabs, and saves it to the tsv file"""
+    tsv_out.write('\t'.join([' ' if arg is None else str(arg) for arg in args]) + '\n')
 
 
 def find_template_gal_and_stars(galaxy, min_stars_template):
@@ -192,19 +205,19 @@ def find_template_gal_and_stars(galaxy, min_stars_template):
 def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
     """Returns a list of 5 vectors representing the shift needed to align each to
        the template, if None then the a vector could not be found for the galaxy.""" 
-    color_vectors = OrderedDict()
+    color_vectors, num_stars = OrderedDict(), OrderedDict()
 
     for color, img, stars in galaxy.gen_img_star_pairs():
         # only find matching stars if it is not the template galaxy
         if color == template_color:
             color_vectors.update({color: np.array((0, 0))})
-        
+            num_stars.update({color: len(template_stars)}) 
         else:
             m_src, m_trg = find_like_points(template_stars, stars)
         
             # if no points in it match the template, skip it
             if len(m_src) < min_stars_all:
-                prints('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)), output)
+                prints('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)))
                 continue
 
             fit_src, fit_stars = [], []
@@ -220,36 +233,35 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
                     pass
 
             fit_src, fit_stars = filter_stars(fit_src, fit_stars)
-
-             # if less than the min stars were fit then skip this waveband
+            
+            # if less than the min stars were fit then skip this waveband
             if len(fit_stars) < min_stars_all:
-                prints('Skipping waveband {}, not enough stars could be fit ({} stars)'.format(color, len(fit_stars)), output)
+                prints('Skipping waveband {}, not enough stars could be fit ({} stars)'.format(color, len(fit_stars)))
                 color_vectors.update({color: None})
                 continue
 
             # calculate the average vector from the reference image and this image
             try:
                 color_vectors.update({color: average_vector(fit_src, fit_stars)})
-            
+                num_stars.update({color: len(fit_stars)})
             except StarsNotWithinSigmaError:
-                prints('Skipping waveband {}, stars disagree too much.'.format(color), output)
+                prints('Skipping waveband {}, stars disagree too much.'.format(color))
                 color_vectors.update({color: None})
+                num_stars.update({color: None})
                 continue
 
-    return color_vectors
+    return color_vectors, num_stars
 
 
 def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor):
     """Returns a dict of the shifted images (only those that a vector was found for)"""
     
-    shifted_imgs = OrderedDict()
-    for color, vector in shift_vectors.items():
-         if vector is not None:
-            org_count = np.sum(galaxy.images(color))
-            img, count_diff = shift_img(galaxy.images(color), vector, upscale_factor)    
-            shifted_imgs.update({color: img})    
-            prints('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), count_diff, org_count), output)
-    
+    shifted_imgs = multiprocessing.Manager().dict()
+    procs = [multiprocessing.Process(target = shift_img, args = (galaxy.images(color), vector, upscale_factor, shifted_imgs, color)) for color, vector in shift_vectors.items() if vector is not None]
+           
+    for p in procs: p.start()
+    for p in procs: p.join()
+        
     return shifted_imgs
 
 
@@ -282,8 +294,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
             hdu[0].header['CRPIX2'] += int(shift_vectors[color][1])
             hdu[0].header['CRVAL1'] += (shift_vectors[color][1] - int(shift_vectors[color][1])) * hdu[0].header['CD1_2']
             hdu[0].header['CRVAL2'] += (shift_vectors[color][0] - int(shift_vectors[color][0])) * hdu[0].header['CD2_1']
-            hdu.writeto(os.path.join(outdir,  galaxy.name + '_' + color + '.fits'))
-
+            hdu.writeto(os.path.join(outdir,  galaxy.name + '_' + color + '.fits')) 
 
 
 def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands, run_tests, sp_path, upscale_factor):
@@ -294,45 +305,53 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
     os.mkdir(p)
     
     # set up output files / directories
-    global output
+    global output, tsv_out
     output = open(os.path.join(p, 'output.txt'), 'w')
-    
-    prints('--- Processing galaxy {} ---'.format(galaxy.name), output)
+    tsv_out = open(os.path.join(p, 'info.tsv'), 'w')
+    tsv_print('objID', 'min_stars_template', 'min_stars_all', 'upscale_factor', 'g_vec', 'i_vec', 'r_vec', 'u_vec', 'z_vec', 'g_stars', 'i_stars', 'r_stars', 'u_stars', 'z_stars')
+
+    prints('--- Processing galaxy {} ---'.format(galaxy.name))
 
     try:
         template_color, template_stars = find_template_gal_and_stars(galaxy, min_stars_template)
     except NoViableTemplateError:
-        prints('No viable template could be found', output)
-        output.close(); galaxy.close()
+        prints('No viable template could be found')
+        output.close(); galaxy.close(); tsv_out.close()
         shutil.rmtree(p)
         return
    
-    prints('Reference waveband chosen is {} with {} stars'.format(template_color, len(template_stars)), output) 
+    prints('Reference waveband chosen is {} with {} stars'.format(template_color, len(template_stars))) 
 
-    shift_vectors = get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all)
+    shift_vectors, num_stars = get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all)
     num_viable = len([1 for v in shift_vectors.values() if v is not None])
     if num_viable < min_wavebands:
         print 'Skipping galaxy, not enough viable wavebands ({} of {} needed)'.format(num_viable, min_wavebands)
-        output.close(); galaxy.close()
+        output.close(); galaxy.close(); tsv_out.close()
         shutil.rmtree(p)
     
     else:  
-        galaxy.add_borders(int(len(galaxy.images('g')) * border_size))
+        left, right, top, bottom = galaxy.crop_images_to_galaxy()
+        prints('Cropped images down to include only the galaxy | X: ({}, {}) | Y: ({}, {})'.format(left, right, top, bottom))
+        galaxy.add_borders(int(galaxy.width * border_size))
+
         try:
             shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor)    
         except ImageTooLargeError:
             print 'Input images are too large to be upscaled, skipping galaxy'
-            output.close(); galaxy.close()
+            output.close(); galaxy.close(); tsv_out.close()
             shutil.rmtree(p)
             return
 
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
-     
+        tsv_print(galaxy.name, min_stars_template, min_stars_all, upscale_factor,
+                  shift_vectors['g'], shift_vectors['i'], shift_vectors['r'], shift_vectors['u'], shift_vectors['z'],
+                  num_stars['g'], num_stars['i'], num_stars['r'], num_stars['u'], num_stars['z'])
+
         if run_tests:
-            prints('Running tests...', output)
+            prints('Running tests...')
             testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), 10, sp_path)
         
-        output.close()
+        output.close(); galaxy.close(); tsv_out.close()
 
    
    
@@ -342,13 +361,13 @@ if __name__ == '__main__':
     parser.add_argument('in_dir', help = 'A directory containing the input galaxies, see -in_format for how this should be structured.')
     parser.add_argument('out_dir', help = 'A directory for the output images.  If it does not exist then it will be created, if it already exists then all files in it will be deleted.')
     parser.add_argument('-star_class_perc', default = 0.65, type = float, help = 'The minimum probablity confidence needed of the sextractor classification that the object is a star.  Value should be in range (0,1), default is 0.7.')
-    parser.add_argument('-border_size', default = 0.025, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
+    parser.add_argument('-border_size', default = 0.01, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
     parser.add_argument('-save_type', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
     parser.add_argument('-min_stars_template', default = 3, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
-    parser.add_argument('-min_stars_all', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
+    parser.add_argument('-min_stars_all', default = 1, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
     parser.add_argument('-save_originals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the original images are saved as part of the output.  Default is false.')
     parser.add_argument('-min_wavebands', default = 4, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
-    parser.add_argument('-upscale_factor', default = 60, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation.  The upscale cannot contain more than 2^31 pixels; any factor above 100 is not recommended.')
+    parser.add_argument('-upscale_factor', default = 100, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation.  The upscale cannot contain more than 2^31 pixels; any factor above 100 is not recommended.')
     parser.add_argument('-run_tests', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
     parser.add_argument('-sp_path', default = '{}/scripts/SpArcFiRe'.format(os.getenv('SPARCFIRE_HOME')), help = 'The path to the local install of SpArcFiRe.')
     args = parser.parse_args() 
@@ -397,8 +416,8 @@ if __name__ == '__main__':
             process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.min_wavebands, args.run_tests, args.sp_path, args.upscale_factor)
             print
 
-        except NoError as e:    
-            print 'Failed to shift', gal.name
+        except NoError:    
+            print 'Failed to shift {}\n'.format(gal.name)
     
     for path in glob.glob('core.*'):
         try: os.remove(path)

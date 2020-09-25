@@ -1,0 +1,7 @@
+--- Processing galaxy 1237648705659470004 ---
+Reference waveband chosen is r with 4 stars
+Skipping waveband u, stars disagree too much.
+Shifted waveband g by (0.4796300000000002, -0.12844999999998308) with a flux error of 6.103515625e-05 / 757.284973145
+Shifted waveband i by (-0.03906333333332176, 0.553276666666663) with a flux error of 0.0001220703125 / 1742.56140137
+Shifted waveband r by (0, 0) with a flux error of 0 / 1290.51245117
+Shifted waveband z by (0.3457399999999969, 0.4452933333333367) with a flux error of 0.0 / 2158.98681641
