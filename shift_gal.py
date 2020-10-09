@@ -16,6 +16,7 @@ import testing
 from collections import OrderedDict
 import cv2
 import multiprocessing
+from psutil import virtual_memory
 
 class NoViableTemplateError(Exception): pass
 
@@ -26,6 +27,10 @@ class StarsNotWithinSigmaError(Exception): pass
 class PhotonCountNotPreservedAfterShiftError(Exception): pass
 
 class ImageTooLargeError(Exception): pass
+
+class NotEnoughMemoryError(Exception):
+    def __init__(self, needed_memory):
+        print '\n\n{} GB of memory needed, try disabling running in parallel or lowering the upscale factor.\n\n'.format(needed_memory / 1024.0**3)
 
 # used to see errors when testing
 class NoError(Exception): pass
@@ -130,7 +135,7 @@ def average_vector(m_src, m_trg, maxsigma = 2):
     return avg
 
 
-def shift_img(gal, vector, upscale_factor, gal_dict, color, check_count = True):
+def shift_img(gal, vector, upscale_factor, gal_dict = dict(), color = 'NoColor', check_count = True):
     """Shifts the image using Lanczos interoplation, updates the image in gal_dict"""    
     prints('Started processing shift on waveband {}...'.format(color)) 
     if vector[0] == 0 and vector[1] == 0:
@@ -163,13 +168,16 @@ def shift_img(gal, vector, upscale_factor, gal_dict, color, check_count = True):
     if padding == 0:
         gal_dict.update({color: upscale})
     else:
-        gal_dict.update({color: upscale[padding : -1 * padding, padding : -1 * padding]})
+        upscale = upscale[padding : -1 * padding, padding : -1 * padding]
+        gal_dict.update({color: upscale})
+
+    return upscale    
 
 
 def prints(line):
     """Prints line and saves it to the output"""
     print line
-    output.write(line + '\n')
+    if output is not None: output.write(line + '\n')
 
 
 def tsv_print(*args):
@@ -218,6 +226,8 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
             # if no points in it match the template, skip it
             if len(m_src) < min_stars_all:
                 prints('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)))
+                color_vectors.update({color: None})
+                num_stars.update({color: 0})
                 continue
 
             fit_src, fit_stars = [], []
@@ -238,6 +248,7 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
             if len(fit_stars) < min_stars_all:
                 prints('Skipping waveband {}, not enough stars could be fit ({} stars)'.format(color, len(fit_stars)))
                 color_vectors.update({color: None})
+                num_stars.update({color: 0})
                 continue
 
             # calculate the average vector from the reference image and this image
@@ -247,21 +258,35 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
             except StarsNotWithinSigmaError:
                 prints('Skipping waveband {}, stars disagree too much.'.format(color))
                 color_vectors.update({color: None})
-                num_stars.update({color: None})
+                num_stars.update({color: 0})
                 continue
 
     return color_vectors, num_stars
 
 
-def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor):
+def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor, run_in_parallel, max_memory):
     """Returns a dict of the shifted images (only those that a vector was found for)"""
     
     shifted_imgs = multiprocessing.Manager().dict()
     procs = [multiprocessing.Process(target = shift_img, args = (galaxy.images(color), vector, upscale_factor, shifted_imgs, color)) for color, vector in shift_vectors.items() if vector is not None]
-           
-    for p in procs: p.start()
-    for p in procs: p.join()
+
+    if run_in_parallel:
+        needed_memory = galaxy.width * galaxy.height * upscale_factor**2 * 8 * len(procs)
+        if needed_memory > max_memory:
+            raise NotEnoughMemoryError(needed_memory)
         
+        for p in procs: p.start()
+        for p in procs: p.join()
+    
+    else:
+        needed_memory = galaxy.width * galaxy.height * upscale_factor**2 * 8
+        if needed_memory > max_memory:
+            raise NotEnoughMemoryError(needed_memory)
+
+        for p in procs:
+            p.start()
+            p.join()
+
     return shifted_imgs
 
 
@@ -273,12 +298,12 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
 
         if save_type in ('png', 'both'):
             # make copies and modify the image so that it is visible as a png
-            thres = np.max(galaxy.images(color)) * 0.015
+            thres = np.max(galaxy.images(color)) * 0.02
             org, shift = np.copy(galaxy.images(color)), np.copy(shifted_imgs[color])
             org[org > thres] = thres
             shift[shift > thres] = thres
-            if save_originals: plt.imsave(os.path.join(outdir, 'originals', galaxy.name + '_' + color + '.png'), org, cmap = 'gray')
-            plt.imsave(os.path.join(outdir, galaxy.name + '_' + color + '.png'), shift, cmap = 'gray')
+            if save_originals: plt.imsave(os.path.join(outdir, 'originals', galaxy.name + '_' + color + '.png'), org, cmap = 'gray', origin = 'lower')
+            plt.imsave(os.path.join(outdir, galaxy.name + '_' + color + '.png'), shift, cmap = 'gray', origin = 'lower')
 
         if save_type in ('fits', 'both'):
             # copy the header info from the original image into the new fits file
@@ -297,7 +322,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
             hdu.writeto(os.path.join(outdir,  galaxy.name + '_' + color + '.fits')) 
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands, run_tests, sp_path, upscale_factor):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, save_originals, min_wavebands, run_tests, sp_path, upscale_factor, crop_images, run_in_parallel, max_memory):
     
     # set up output directory 
     p = os.path.join(out_dir, galaxy.name)
@@ -314,6 +339,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 
     try:
         template_color, template_stars = find_template_gal_and_stars(galaxy, min_stars_template)
+        template_cpy = np.copy(galaxy.images(template_color))
     except NoViableTemplateError:
         prints('No viable template could be found')
         output.close(); galaxy.close(); tsv_out.close()
@@ -321,7 +347,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         return
    
     prints('Reference waveband chosen is {} with {} stars'.format(template_color, len(template_stars))) 
-
+    
     shift_vectors, num_stars = get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all)
     num_viable = len([1 for v in shift_vectors.values() if v is not None])
     if num_viable < min_wavebands:
@@ -329,19 +355,20 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         output.close(); galaxy.close(); tsv_out.close()
         shutil.rmtree(p)
     
-    else:  
-        left, right, top, bottom = galaxy.crop_images_to_galaxy()
-        prints('Cropped images down to include only the galaxy | X: ({}, {}) | Y: ({}, {})'.format(left, right, top, bottom))
+    else:
+        if crop_images:
+            left, right, top, bottom = galaxy.crop_images_to_galaxy()
+            prints('Cropped images down to include only the galaxy | X: ({}, {}) | Y: ({}, {})'.format(left, right, top, bottom))
         galaxy.add_borders(int(galaxy.width * border_size))
 
         try:
-            shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor)    
+            shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor, run_in_parallel, max_memory)    
         except ImageTooLargeError:
             print 'Input images are too large to be upscaled, skipping galaxy'
             output.close(); galaxy.close(); tsv_out.close()
             shutil.rmtree(p)
             return
-
+        
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
         tsv_print(galaxy.name, min_stars_template, min_stars_all, upscale_factor,
                   shift_vectors['g'], shift_vectors['i'], shift_vectors['r'], shift_vectors['u'], shift_vectors['z'],
@@ -349,7 +376,8 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 
         if run_tests:
             prints('Running tests...')
-            testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), 10, sp_path)
+            testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), template_cpy, galaxy.name, 10, sp_path)
+        
         
         output.close(); galaxy.close(); tsv_out.close()
 
@@ -358,65 +386,78 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 if __name__ == '__main__':
     # get all of the arguments / option
     parser = argparse.ArgumentParser()
-    parser.add_argument('in_dir', help = 'A directory containing the input galaxies, see -in_format for how this should be structured.')
-    parser.add_argument('out_dir', help = 'A directory for the output images.  If it does not exist then it will be created, if it already exists then all files in it will be deleted.')
-    parser.add_argument('-star_class_perc', default = 0.65, type = float, help = 'The minimum probablity confidence needed of the sextractor classification that the object is a star.  Value should be in range (0,1), default is 0.7.')
-    parser.add_argument('-border_size', default = 0.01, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
-    parser.add_argument('-save_type', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
-    parser.add_argument('-min_stars_template', default = 3, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
-    parser.add_argument('-min_stars_all', default = 1, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
-    parser.add_argument('-save_originals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the original images are saved as part of the output.  Default is false.')
-    parser.add_argument('-min_wavebands', default = 4, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
-    parser.add_argument('-upscale_factor', default = 100, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation.  The upscale cannot contain more than 2^31 pixels; any factor above 100 is not recommended.')
-    parser.add_argument('-run_tests', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
-    parser.add_argument('-sp_path', default = '{}/scripts/SpArcFiRe'.format(os.getenv('SPARCFIRE_HOME')), help = 'The path to the local install of SpArcFiRe.')
+    parser.add_argument('inDir', help = 'A directory containing the input galaxies, see -in_format for how this should be structured.')
+    parser.add_argument('outDir', help = 'A directory for the output images.  If it does not exist then it will be created, if it already exists then all files in it will be deleted.')
+    parser.add_argument('-saveType', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
+    parser.add_argument('-saveOriginals', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Contols if the original images are saved as part of the output.  Default is false.')
+    parser.add_argument('-starClassPerc', default = 0.65, type = float, help = 'The minimum probablity confidence needed of the sextractor classification that the object is a star.  Value should be in range (0,1), default is 0.7.')
+    parser.add_argument('-cropImages', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then the input images will be cropped to only the galaxy using Source Extractor.')
+    parser.add_argument('-borderSize', default = 0.01, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
+    parser.add_argument('-minStarsTemplate', default = 3, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
+    parser.add_argument('-minStarsAll', default = 2, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
+    parser.add_argument('-minWavebands', default = 0, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
+    parser.add_argument('-upscaleFactor', default = 100, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation prior to shifting.')
+    parser.add_argument('-runInParallel', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Will process wavebands in parallel, this requires the system to have enough memory to store all upscaled wavebands simultaneously.')
+    mem = virtual_memory().total / 1024.0**3
+    parser.add_argument('-maxMemory', default = mem, type = float, help = 'The maxmimum amount of memory (in GB) the process can use.  At least 16GB is recommended but more will be needed for larger images and larger upscale factors.')
+
+    parser.add_argument('-runTests', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
+    parser.add_argument('-spPath', default = '{}/scripts/SpArcFiRe'.format(os.getenv('SPARCFIRE_HOME')), help = 'The path to the local install of SpArcFiRe.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
-    if not os.path.isdir(args.in_dir):
-        print args.in_dir, 'is not a directory.'
+    if not os.path.isdir(args.inDir):
+        print args.inDir, 'is not a directory.'
         exit(1)
     
     # check that the star_class_parc is valid
-    if args.star_class_perc <= 0 or args.star_class_perc > 1:
-        print 'Given star class percentage', args.star_class_perc, 'does not fall within the range (0, 1].'
+    if args.starClassPerc <= 0 or args.starClassPerc > 1:
+        print 'Given star class percentage', args.starClassPerc, 'does not fall within the range (0, 1].'
         exit(1)
     
     # check that border_size is valid
-    if args.border_size < 0:
+    if args.borderSize < 0:
         print 'Border size much be a positive value.'
         exit(1)
 
     # check that upscale_factor is valid
-    if args.upscale_factor < 10:
-        print 'Upscale factor must be greater than 10'
+    if args.upscaleFactor < 10:
+        print 'Upscale factor must be at least 10'
+        exit(1)
+
+    # check that the memory is valid
+    if args.maxMemory <= 0:
+        print 'Maximum memory must be a positive value in bytes'
         exit(1)
     
     # if the output directory does not exist then create it
     try:
-        if not os.path.isdir(args.out_dir):
-            os.mkdir(args.out_dir)
+        if not os.path.isdir(args.outDir):
+            os.mkdir(args.outDir)
+    
     except:
-        print 'out_dir', args.out_dir, 'could not be created.'
+        print 'out_dir', args.outDir, 'could not be created.'
         exit(1)
 
     t = ('True', 'true', '1')
-    args.save_originals = True if args.save_originals in t else False
-    args.run_tests = True if args.run_tests in t else False
- 
-    if args.run_tests and not os.path.exists(args.sp_path):
-        print 'The path to your local install of SpArcFiRe install is not valid: {}.'.format(args.sp_path)
+    args.saveOriginals = True if args.saveOriginals in t else False
+    args.runTests = True if args.runTests in t else False
+    args.cropImages = True if args.cropImages in t else False
+    args.runInParallel = True if args.runInParallel in t else False
+    
+    if args.runTests and not os.path.exists(args.spPath):
+        print 'The path to your local install of SpArcFiRe install is not valid: {}.'.format(args.spPath)
         exit(1)
      
-    for gal in load_gals.load_galaxies(args.in_dir, args.star_class_perc):
+    for gal in load_gals.load_galaxies(args.inDir, args.starClassPerc):
         if type(gal) == str: 
             print 'Failed to load {}'.format(gal)
             continue
         try:
-            process_galaxy(gal, args.out_dir, args.border_size, args.save_type, args.min_stars_template, args.min_stars_all, args.save_originals, args.min_wavebands, args.run_tests, args.sp_path, args.upscale_factor)
+            process_galaxy(gal, args.outDir, args.borderSize, args.saveType, args.minStarsTemplate, args.minStarsAll, args.saveOriginals, args.minWavebands, args.runTests, args.spPath, args.upscaleFactor, args.cropImages, args.runInParallel, args.maxMemory * 1024**3)
             print
 
-        except NoError:    
+        except:    
             print 'Failed to shift {}\n'.format(gal.name)
     
     for path in glob.glob('core.*'):

@@ -80,7 +80,7 @@ def test_single_shift(outdir, img, sp_path):
     for delta in r:
         vector = np.array([delta, delta])
         print 'Running delta = {}'.format(vector)
-        img = shift_gal.shift_img(img, vector, check_count = False)[0]
+        img = shift_gal.shift_img(img, vector, check_count = False)
         cycle_imgs.append(np.copy(img))
         img = np.copy(org) 
     
@@ -162,8 +162,8 @@ def test_double_shift(outdir, img, sp_path):
     for delta in r:
         vector = np.array([delta, delta])
         print 'Running delta = {}'.format(vector)
-        img = shift_gal.shift_img(img, vector, check_count = False)[0]
-        img = shift_gal.shift_img(img, vector * -1, check_count = False)[0]
+        img = shift_gal.shift_img(img, vector, check_count = False)
+        img = shift_gal.shift_img(img, vector * -1, check_count = False)
         
         diff = np.abs(org - img)
         mean_diff.append(np.mean(diff))
@@ -303,8 +303,8 @@ def test_random_shifts(outdir, img, cycles, sp_path):
     for i in range(cycles):
         vector = np.array([-1.0, -1.0]) + 2 * np.random.random(2)
         print 'Running shift {}, cycle {}'.format(vector, i + 1)
-        img = shift_gal.shift_img(img, vector)[0]
-        img = shift_gal.shift_img(img, vector * -1)[0]
+        img = shift_gal.shift_img(img, vector)
+        img = shift_gal.shift_img(img, vector * -1)
         diff = np.abs(org - img)
         mean_diff.append(np.mean(diff))
         mean_diff_gal.append(np.mean(diff[seg_img == gal_val]))
@@ -385,21 +385,91 @@ def test_random_shifts(outdir, img, cycles, sp_path):
     plt.savefig(os.path.join(outdir, 'random_star_diff.png'))
 
 
-def test_upscale_factor(outdir, img):
+def test_upscale_save_data(outdir, data_file, img, name):
+
+    vecs = [l.rstrip().split(' ') for l in open('shifts.txt').readlines()]
+    vecs = [np.array((float(s[0]), float(s[1]))) for s in vecs]
+    data = name + '\t'
+
+    for vec in vecs:    
+        for i in (100, 200, 400, 600, 800, 1000):
+            print 'Running vec {}, upscale factor {}'.format(vec, i)
+            img_cpy = np.copy(img)
+            img_cpy = shift_gal.shift_img(img_cpy, vec, i, check_count = False)
+            img_cpy = shift_gal.shift_img(img_cpy, vec * -1, i, check_count = False)
+            data += str(np.mean(np.abs(img - img_cpy))) + '\t'
+
+    data_file = open(data_file, 'a')
+    data_file.write(data + '\n')
+    data_file.close()
+
+
+def plot_upscale_data(outdir, data_path):
+
+    class GalData:
+        def __init__(self, line, name):
+            self.name = name
+            self.vec_errs = [line[i * 6 + 1: 6 * (i + 1) + 1] for i in range(10)]
     
-    #img = img[90:-90, 90:-90]
-    for vec in np.random.random((1, 2)):
+    vecs = [l.rstrip().split(' ') for l in open('shifts.txt').readlines()]
+    vecs = [np.array((float(s[0]), float(s[1]))) for s in vecs]
+
+    data = genfromtxt(data_path, skip_header = 1)
+    data_str = genfromtxt(data_path, skip_header = 1, dtype = str)
+    galdata = [GalData(data[i], data_str[i][0]) for i in range(len(data))]
+    
+    x = (100, 200, 400, 600, 800, 1000)
+    
+    # plot with all galaxies all shifts
+    plt.figure()
+    for gd in galdata:
+        for ve in gd.vec_errs:
+            plt.plot(x, ve)
+
+    plt.xlabel('Upscale Factor')
+    plt.ylabel('Flux Error (Nanomaggies)')
+    plt.title('Mean Absolute Flux Error vs Upscale Factor\nAll Galaxies - All Shifts')
+    plt.savefig(os.path.join(outdir, 'flux_err_all.png'))
+
+    # plot for each galaxy, all shifts
+    for gd in galdata:
+        plt.figure()
+        for i in range(len(gd.vec_errs)):
+            plt.plot(x, gd.vec_errs[i], label = '{} | {:.2f}'.format(vecs[i], np.sqrt(vecs[i][0]**2 + vecs[i][1]**2)))
+        
+        plt.legend(title = 'Shift Vector', bbox_to_anchor = (1.05, 1), loc = 'upper left')
+        plt.xlabel('Upscale Factor')
+        plt.ylabel('Flux Error (Nanomaggies)')
+        plt.title('Mean Absolute Flux Error vs Upscale Factor\n{} - All Shifts'.format(gd.name))
+        plt.tight_layout()
+        plt.savefig(os.path.join(outdir, 'flux_err_{}_all_shifts.png'.format(gd.name)))
+
+
+    # plot for each shift, all galaxies
+    for i in range(10):
+        plt.figure()
+        for gd in galdata:
+            plt.plot(x, gd.vec_errs[i])
+
+        plt.xlabel('Upscale Factor')
+        plt.ylabel('Flux Error (Nanomaggies)')
+        plt.title('Mean Absolute Flux Error vs Upscale Factor\nAll Galaxies - Vector: {}'.format(vecs[i]))
+        plt.savefig(os.path.join(outdir, 'flux_err_all_galaxies_{}.png'.format(vecs[i])))
+
+
+def test_upscale_factor(outdir, img):
+     
+    for vec in np.random.random((20, 2)):
         print 'Testing shift vector of {}'.format(vec)
         upscale_imgs = []
-        upscales = np.arange(100, 101, 10)
-        #upscales = (10, 20, 40, 80, 160, 300)
+        upscales = (50, 100, 200, 300, 400)
+        
         for i in upscales:
             print 'Running upscale factor {}'.format(i)
-            img_cpy = np.copy(img)
-            print img_cpy.shape
-            img_cpy = shift_gal.shift_img(img_cpy, vec, i, check_count = False)[0]
-            upscale_imgs.append(np.copy(img_cpy))
-            print img_cpy.shape
+            img_cpy_str = np.copy(img)
+            img_cpy_str = shift_gal.shift_img(img_cpy_str, vec, i, check_count = False)
+            upscale_imgs.append(np.copy(img_cpy_str))
+        
         org_stars, star_diffs = [], []
         p = os.path.join(outdir, 'temp.fits')
         load_gals.save_fits(img, p)
@@ -424,13 +494,12 @@ def test_upscale_factor(outdir, img):
         plt.figure()
         plt.plot(upscales, star_diffs)
         plt.title('Mean Difference in Star Location {}'.format(vec))
-        plt.ylim(0, 0.02)
         plt.xlabel('Upscale Factor')
         plt.ylabel('Mean Location Error')
         plt.savefig(os.path.join(outdir, 'upscale_single_shift_star_diff_{}.png'.format(vec)))
-
-
-def test_shifts(outdir, img, random_cycles, sp_path):
+    
+       
+def test_shifts(outdir, cropped_img, img, name, random_cycles, sp_path):
     """Runs various tests measureing flux and positional error"""
 
     outdir = os.path.abspath(outdir)
@@ -443,7 +512,11 @@ def test_shifts(outdir, img, random_cycles, sp_path):
         print 'Error creating {}, testing not ran.'.format(outdir)
         return
     
-    test_upscale_factor(outdir, img)
+    plot_upscale_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/dataCpy.csv')
+
+    #if cropped_img.shape[0] < 107:
+    #    test_upscale_save_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/data.csv', cropped_img, name)
+    #test_upscale_factor(outdir, cropped_img, img)
     ''' 
     test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
     test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
