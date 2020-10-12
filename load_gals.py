@@ -9,9 +9,14 @@ from galaxy import Star
 
 class SextractorError(Exception): pass
 
+def load_fits(path):
+    f = fits.open(path, ignore_missing_end = True)
+    img = np.copy(f[0].data)
+    f.close()
+    return img
+
 def save_fits(img, path):
     fits.HDUList([fits.PrimaryHDU(data = img)]).writeto(path, overwrite = True)
-
 
 def get_seg_img(img):
     """Runs Source Extractor on the given FITS image and

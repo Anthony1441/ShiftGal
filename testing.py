@@ -17,6 +17,7 @@ import find_center
 class SpArcFiReError(Exception): pass
 class_prob = 0.06
 
+
 def run_sparcfire(org, img_data, irange, outdir, sp_path):
     """Runs SpArcFiRe on the org and ima_data, then returns the difference in galaxy center for org and img_data"""
     
@@ -497,8 +498,49 @@ def test_upscale_factor(outdir, img):
         plt.xlabel('Upscale Factor')
         plt.ylabel('Mean Location Error')
         plt.savefig(os.path.join(outdir, 'upscale_single_shift_star_diff_{}.png'.format(vec)))
-    
+
+
+def test_fpack_compression(outdir, img, name):
+   
+    path = os.path.join(outdir, 'temp.fits')
+    perc_diff, mean_diff, compression = [], [], []
+    values = np.arange(2, 102, 2)
+    for i in values:
+        load_gals.save_fits(img, path)
+        uncompressed_size = os.path.getsize(path)
+        subprocess.Popen(['/home/wayne/bin/bin.x86_64/fpack', '-q', str(i), '-D', '-Y', path]).wait()
+        compressed_size = os.path.getsize(path + '.fz')
+        subprocess.Popen(['/home/wayne/bin/bin.x86_64/funpack', path + '.fz']).wait()
+        compressed_img = load_gals.load_fits(path)
+        perc_diff.append(np.sum(np.abs(img - compressed_img)) / np.sum(img) * 100)
+        mean_diff.append(np.mean(np.abs(img - compressed_img)))
+        compression.append(compressed_size / float(uncompressed_size))
+        os.remove(path + '.fz')
+
+    os.remove(path)
        
+    plt.figure()
+    plt.plot(values, perc_diff)
+    plt.title('FPack Compression Level vs. Abs Sum Difference in Flux')
+    plt.xlabel('Compression Level')
+    plt.ylabel('Total Flux Error (Percent)')
+    plt.savefig(os.path.join(outdir, 'compression_sum.png'))
+
+    plt.figure()
+    plt.plot(values, mean_diff)
+    plt.title('FPack Compression Level vs. Mean Abs Difference in Flux')
+    plt.xlabel('Compression Level')
+    plt.ylabel('Flux Error (Nanomaggies)')
+    plt.savefig(os.path.join(outdir, 'compression_mean.png'))
+
+    plt.figure()
+    plt.plot(values, compression)
+    plt.title('FPack Compression Level vs. Compression Percent')
+    plt.xlabel('Compression Level')
+    plt.ylabel('Compressed File Size (Percent of Original)')
+    plt.savefig(os.path.join(outdir, 'compression.png'))
+
+
 def test_shifts(outdir, cropped_img, img, name, random_cycles, sp_path):
     """Runs various tests measureing flux and positional error"""
 
@@ -512,12 +554,15 @@ def test_shifts(outdir, cropped_img, img, name, random_cycles, sp_path):
         print 'Error creating {}, testing not ran.'.format(outdir)
         return
     
-    plot_upscale_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/dataCpy.csv')
+    #plot_upscale_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/dataCpy.csv')
 
     #if cropped_img.shape[0] < 107:
     #    test_upscale_save_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/data.csv', cropped_img, name)
     #test_upscale_factor(outdir, cropped_img, img)
-    ''' 
+    
+    test_fpack_compression(outdir, img, name)
+
+    '''
     test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
     test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
     x, y = test_double_shift(outdir, np.copy(img), sp_path)

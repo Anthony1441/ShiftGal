@@ -47,7 +47,6 @@ class Galaxy:
         """Runs source extractor on the images and crops the images
            down to only the galaxy"""
 
-        left, right, top, bottom = np.inf, 0, np.inf, 0
         left, right, top, bottom = 0, 0, 0, 0
         
         for _, img in self.images():
@@ -58,19 +57,17 @@ class Galaxy:
             left += np.min(x_inds); right += np.max(x_inds)
             top += np.min(y_inds); bottom += np.max(y_inds)
         
-        left /= self.num_wb; right /= self.num_wb
-        top /= self.num_wb; bottom /= self.num_wb
+        left /= float(self.num_wb); right /= float(self.num_wb)
+        top /= float(self.num_wb); bottom /= float(self.num_wb)
 
         center_x, center_y = self.width / 2, self.height / 2
         size = int(max(center_x - left, right - center_x, center_y - top, bottom - center_y))
-        size += int(size * 0.1)
-        if size > self.width / 2: return
         
         left, right = int(center_x - size), int(center_x + size)
         top, bottom = int(center_y - size), int(center_y + size)
         
         # make sure the values found are valid
-        assert top > 0; assert left > 0; 
+        assert top >= 0; assert left >= 0; 
         assert bottom <= self.height; assert right <= self.width
         
         # crop the images

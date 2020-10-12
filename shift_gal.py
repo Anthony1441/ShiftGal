@@ -457,7 +457,7 @@ if __name__ == '__main__':
             process_galaxy(gal, args.outDir, args.borderSize, args.saveType, args.minStarsTemplate, args.minStarsAll, args.saveOriginals, args.minWavebands, args.runTests, args.spPath, args.upscaleFactor, args.cropImages, args.runInParallel, args.maxMemory * 1024**3)
             print
 
-        except:    
+        except NoError:    
             print 'Failed to shift {}\n'.format(gal.name)
     
     for path in glob.glob('core.*'):
