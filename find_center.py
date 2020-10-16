@@ -1,24 +1,18 @@
 import numpy as np
-import matplotlib
-matplotlib.use('agg') # need this for openlab
-import matplotlib.pyplot as plt
-import subprocess
 from galaxy import Star
+from astropy.modeling import functional_models, fitting
 
 class CurveFitError(Exception):
     def __init__(self, message):
         self.message = message
 
 
-def estimate_center(img, star, percent_img_to_explore = 0.1, visualize = False, savename = None):
+def estimate_center(img, star, percent_img_to_explore = 0.1):
     """
-    img: 2D array to fit the 3D surface to
+    img: Full galaxy image
     star: Star object
     percent_of_img_to_explore: since the sextractor points are not very accurate a search is done around the point
-        to try and find the actual maximum point.  It will explore in a square 2 * img.height * percent wide and high.
-    visualize: if True then a plot showing the original image as a surface, a plot showing the fitted surface,
-        and contour plot are shown
-    savename: if the savedir is specified then the plot will be saved with this name
+        to try and find the actual maximum point.  It will explore in a square 2 * img.height * percent wide and high
     """
     point = (int(star.x), int(star.y))
     h, w = img.shape
@@ -40,48 +34,20 @@ def estimate_center(img, star, percent_img_to_explore = 0.1, visualize = False, 
         raise CurveFitError('Distance between sextractor point and max point is too big.')
 
     # zoom up on the image so that the brightest pixel is in the center (should give a better fit)
-    s_size = 5
+    s_size = 8
     
     ys_min = max(0, max_pt[1] - s_size)
     ys_max = min(h, max_pt[1] + s_size)
     xs_min = max(0, max_pt[0] - s_size)
     xs_max = min(w, max_pt[0] + s_size)
     
-    max_sub_img = img[ys_min : ys_max, xs_min : xs_max]
-
-    # create a set of (x, y) coordinate points for alglib
-    x = '['
-    for i in range(max_sub_img.shape[1]):
-        for j in range(max_sub_img.shape[0]):
-            x += '[{}, {}], '.format(str(j), str(i))
-    x = x[:-2] + ']'
+    # fit a Moffat curve to te star
+    centered_img = img[ys_min : ys_max, xs_min : xs_max]
+    amp = np.max(centered_img)
+    yb, xb = centered_img.shape
+    y_grid, x_grid = np.mgrid[:yb, :xb]
+    f_init = functional_models.Moffat2D(amplitude = np.max(centered_img), x_0 = xb / 2.0, y_0 = yb / 2.0, bounds = {'x_0': (0, xb), 'y_0': (0, yb), 'amplitude': (amp - 0.5 * amp, amp + 0.5 * amp), 'gamma': (0, 2 *s_size)})
+    fit_f = fitting.LevMarLSQFitter()
+    f = fit_f(f_init, x_grid, y_grid, centered_img, maxiter = 1000000)
     
-    # convert the image into a string alglib can use
-    y = '['
-    for value in max_sub_img.ravel():
-        y += str(value) + ', '
-    y = y[:-2] + ']'
-    
-    # input paramaters (xShift, yShift, xAlpha, yAlpha, Amplitude)
-    params = '[5, 5, 1, 1, 100]' #, -1.5, 5, 5, 1, 3, -4, -1, 1.5, 1.5, 6, 4, 1, 1.5, 1.5, 6.5]'
-    
-    # run and wait for runFit to return the point
-    proc = subprocess.Popen(['./CurveFit/runFit', x, y, params], stdout = subprocess.PIPE)
-    out, err = proc.communicate()
-    res = proc.wait()
-    
-    if res != 0:
-        raise CurveFitError(err)
-  
-    output = np.array(out.rstrip().split(' ')).astype(float)
-    # shift the point back to the original coordinates
-    shifted_fit_max_point = (output[0] + xs_min, output[1] + ys_min)
-
-    if visualize:
-        plt.figure()
-        plt.imshow(max_sub_img, cmap = 'gray')
-        plt.scatter(point[0] - xs_min, point[1] - ys_min, s = 2, color = 'blue')
-        plt.scatter(real_max_point[0], real_max_point[1], s = 2, color = 'red')
-        plt.savefig(savename + '.png')
-
-    return Star(shifted_fit_max_point[0], shifted_fit_max_point[1], x_spread = output[2], y_spread = output[3])
+    return Star(f.x_0 + xs_min, f.y_0 + ys_min, gamma = f.gamma, alpha = f.alpha)

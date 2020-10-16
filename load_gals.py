@@ -22,16 +22,25 @@ def get_seg_img(img):
     """Runs Source Extractor on the given FITS image and
        returns the segmenation image"""
     
+    seg = None
     save_fits(img, 'temp.fits')
-    proc = subprocess.Popen(['./sex', 'temp.fits', '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', 'temp_seg.fits', '-CATALOG_NAME', 'temp_seg.txt'], stderr = subprocess.PIPE)
-    out, err = proc.communicate()
-    if proc.wait() != 0: raise SextractorError
-    seg = fits.open('temp_seg.fits', ignore_missing_end = True)
-    seg_img = seg[0].data
-    seg.close()
-    os.remove('temp_seg.fits')
-    os.remove('temp_seg.txt')
-    os.remove('temp.fits')
+    try:
+        proc = subprocess.Popen(['./sex', 'temp.fits', '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', 'temp_seg.fits', '-CATALOG_NAME', 'temp_seg.txt'], stderr = subprocess.PIPE) 
+        if proc.wait() != 0: 
+            raise SextractorError
+    
+        seg = fits.open('temp_seg.fits', ignore_missing_end = True)
+        seg_img = seg[0].data
+    
+    except:
+        raise SextractorError
+    
+    finally:
+        if os.path.exists('temp_seg.fits'): os.remove('temp_seg.fits')
+        if os.path.exists('temp_seg.txt'): os.remove('temp_seg.txt')
+        if os.path.exists('temp.fits'): os.remove('temp.fits')
+        if seg is not None: seg.close()
+
     return seg_img
 
 
@@ -41,10 +50,8 @@ def get_sextractor_points(path):
     f = None 
     try:
         proc = subprocess.Popen(['./sex', path, '-CATALOG_NAME', 'star_out.txt'], stderr = subprocess.PIPE)
-        out, err = proc.communicate()
-        res = proc.wait()
-    
-        if res != 0: raise Exception
+        if proc.wait() != 0: 
+            raise Exception
         stars = []
     
         f = open('star_out.txt', 'r') 
@@ -104,7 +111,7 @@ def load_galaxy(galpath, star_class_perc):
             if os.path.exists(p3):
                 star_dict.update({color: get_sextractor_points(p3)})
                 continue
-        except SextractorError:
+        except IndexError:#SextractorError:
             return galpath
 
     return Galaxy(gal_dict, star_dict, star_class_perc, galname)

@@ -40,75 +40,34 @@ output = None
 tsv_out = None
 
 
-def filter_stars(src, trg, min_perc_spread_agreement = 0.7, max_star_spread = 15, min_star_spread = 0.1, min_matching_spread = 0.8):
-    """Takes in a list of target and filters them out based
-       on various parameters, assumes that the source has already been filtered"""
-    # filter out stars whose x and y spread are not within 
-    # the min_perc_spread_agreement of eachother, this should
-    # get rid of non-circular stars
-    temp_src, temp_trg = [], []
-    for i in range(len(trg)):
-        if trg[i].x_spread is not None and min(trg[i].x_spread, trg[i].y_spread) / max(trg[i].x_spread, trg[i].y_spread) >= min_perc_spread_agreement:
-            temp_src.append(src[i])
-            temp_trg.append(trg[i])
-    
-    src, trg = temp_src, temp_trg
-    assert len(src) == len(trg)
+def filter_stars(src, trg, min_gamma = 1, max_gamma = 3, max_dist = 2):
+    """ Filters out stars that are too small, too wide, or whose matching stzr is too far"""
 
-    # filter out stars who have a spread on either axis that is more
-    # then max_star_spread, should remove very large stars (more smeared?)
-    temp_src, temp_trg = [], []
-    for i in range(len(trg)):
-        if trg[i].x_spread is not None and trg[i].x_spread <= max_star_spread and trg[i].y_spread <= max_star_spread:
-            temp_src.append(src[i])
-            temp_trg.append(trg[i])
-
-    src, trg = temp_src, temp_trg
-    assert len(src) == len(trg)
-
-    # filter out stars who have a spread on either a xis that is less
-    # than the min_star_spread, should remove stars that are too small to be used
-    temp_src, temp_trg = [], []
-    for i in range(len(trg)):
-        if trg[i].x_spread is not None and trg[i].x_spread >= min_star_spread and trg[i].y_spread >= min_star_spread:
-            temp_src.append(src[i])
-            temp_trg.append(trg[i])
-    
-    src, trg = temp_src, temp_trg
-    assert len(src) == len(trg)
-    
-    # filter out stars whoose matching star has too disimilar
-    # spreads (meaning that one is more smeared/bright than the other
-    # and the centers are not to be trusted)
-    '''
-    temp_src, temp_trg = [], []
-    for i in range(len(trg)):
-        if (trg[i].x_spread is not None and src[i].x_spread is not None 
-            and min(trg[i].x_spread, src[i].x_spread) / max(trg[i].x_spread, src[i].x_spread) >= min_perc_spread_agreement
-            and min(trg[i].y_spread, src[i].y_spread) / max(trg[i].y_spread, src[i].y_spread) >= min_perc_spread_agreement):
-            
-            temp_src.append(src[i])
-            temp_trg.append(trg[i])
+    m_src, m_trg = [], []
+    for i in range(len(src)):
+        dist = np.sqrt((src[i].x - trg[i].x)**2 + (src[i].y - trg[i].y)**2)
+        if dist > max_dist: continue
+        if trg[i].gamma < min_gamma or trg[i].gamma > max_gamma: continue
         
-    src, trg = temp_src, temp_trg
-    '''
-    assert len(src) == len(trg)
-    return src, trg
+        m_src.append(src[i])
+        m_trg.append(trg[i])
+
+    assert len(m_src) == len(m_trg)
+    return m_src, m_trg
 
 
-def find_like_points(src, trg, max_dist = 10):
+def find_like_points(src, trg):
     """Finds points in trg that are within max_dist distance
        from of a point in src and choses the smallest one.  
        Returns the points found in the same order."""
 
-    INF = 10000
     m_src, m_trg = [], []
 
     for trg_star in trg:
-        m_star, m_dist = None, INF
+        m_star, m_dist = None, np.inf
         for src_star in src:
             temp_dist = np.sqrt((src_star.x - trg_star.x)**2 + (src_star.y - trg_star.y)**2)
-            if temp_dist <= max_dist and temp_dist < m_dist:
+            if temp_dist < m_dist:
                 m_star = src_star
                 m_dist = temp_dist
         
@@ -116,7 +75,7 @@ def find_like_points(src, trg, max_dist = 10):
             m_src.append(m_star)
             m_trg.append(trg_star)
 
-        m_star, m_dist = None, INF
+        m_star, m_dist = None, np.inf
 
     assert len(m_src) == len(m_trg)    
     return m_src, m_trg
@@ -137,7 +96,7 @@ def average_vector(m_src, m_trg, maxsigma = 2):
 
 def shift_img(gal, vector, upscale_factor, gal_dict = dict(), color = 'NoColor', check_count = True):
     """Shifts the image using Lanczos interoplation, updates the image in gal_dict"""    
-    prints('Started processing shift on waveband {}...'.format(color)) 
+    prints('Started processing shift {} on waveband {}...'.format(tuple(vector), color)) 
     if vector[0] == 0 and vector[1] == 0:
         gal_dict.update({color: gal}) 
         prints('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), 0, np.sum(gal)))
@@ -213,13 +172,13 @@ def find_template_gal_and_stars(galaxy, min_stars_template):
 def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
     """Returns a list of 5 vectors representing the shift needed to align each to
        the template, if None then the a vector could not be found for the galaxy.""" 
-    color_vectors, num_stars = OrderedDict(), OrderedDict()
+    color_vectors, stars_dict = OrderedDict(), OrderedDict()
 
     for color, img, stars in galaxy.gen_img_star_pairs():
         # only find matching stars if it is not the template galaxy
         if color == template_color:
             color_vectors.update({color: np.array((0, 0))})
-            num_stars.update({color: len(template_stars)}) 
+            stars_dict.update({color: template_stars}) 
         else:
             m_src, m_trg = find_like_points(template_stars, stars)
         
@@ -227,7 +186,7 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
             if len(m_src) < min_stars_all:
                 prints('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)))
                 color_vectors.update({color: None})
-                num_stars.update({color: 0})
+                stars_dict.update({color: None})
                 continue
 
             fit_src, fit_stars = [], []
@@ -248,20 +207,20 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
             if len(fit_stars) < min_stars_all:
                 prints('Skipping waveband {}, not enough stars could be fit ({} stars)'.format(color, len(fit_stars)))
                 color_vectors.update({color: None})
-                num_stars.update({color: 0})
+                stars_dict.update({color: None})
                 continue
 
             # calculate the average vector from the reference image and this image
             try:
                 color_vectors.update({color: average_vector(fit_src, fit_stars)})
-                num_stars.update({color: len(fit_stars)})
+                stars_dict.update({color: fit_stars})
             except StarsNotWithinSigmaError:
                 prints('Skipping waveband {}, stars disagree too much.'.format(color))
                 color_vectors.update({color: None})
-                num_stars.update({color: 0})
+                stars_dict.update({color: None})
                 continue
 
-    return color_vectors, num_stars
+    return color_vectors, stars_dict
 
 
 def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor, run_in_parallel, max_memory):
@@ -298,7 +257,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, save_ori
 
         if save_type in ('png', 'both'):
             # make copies and modify the image so that it is visible as a png
-            thres = np.max(galaxy.images(color)) * 0.02
+            thres = np.mean(galaxy.images(color)) + 10 * np.std(galaxy.images(color))
             org, shift = np.copy(galaxy.images(color)), np.copy(shifted_imgs[color])
             org[org > thres] = thres
             shift[shift > thres] = thres
@@ -333,7 +292,10 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
     global output, tsv_out
     output = open(os.path.join(p, 'output.txt'), 'w')
     tsv_out = open(os.path.join(p, 'info.tsv'), 'w')
-    tsv_print('objID', 'min_stars_template', 'min_stars_all', 'upscale_factor', 'g_vec', 'i_vec', 'r_vec', 'u_vec', 'z_vec', 'g_stars', 'i_stars', 'r_stars', 'u_stars', 'z_stars')
+    tsv_print('objID', 'min_stars_template', 'min_stars_all', 'upscale_factor', 
+    'g_vec', 'i_vec', 'r_vec', 'u_vec', 'z_vec', 
+    'g_num_stars', 'i_num_stars', 'r_num_stars', 'u_num_stars', 'z_num_stars',
+    'g_star_list', 'i_star_list', 'r_star_list', 'u_star_list', 'z_star_list')
 
     prints('--- Processing galaxy {} ---'.format(galaxy.name))
 
@@ -348,7 +310,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
    
     prints('Reference waveband chosen is {} with {} stars'.format(template_color, len(template_stars))) 
     
-    shift_vectors, num_stars = get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all)
+    shift_vectors, stars = get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all)
     num_viable = len([1 for v in shift_vectors.values() if v is not None])
     if num_viable < min_wavebands:
         print 'Skipping galaxy, not enough viable wavebands ({} of {} needed)'.format(num_viable, min_wavebands)
@@ -369,10 +331,17 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
             shutil.rmtree(p)
             return
         
+        def len_stars(stars):
+            return 0 if stars is None else len(stars)
+
+        def print_stars(stars):
+            return 'NULL' if stars is None else [str(s) for s in stars]
+
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, save_originals)
         tsv_print(galaxy.name, min_stars_template, min_stars_all, upscale_factor,
                   shift_vectors['g'], shift_vectors['i'], shift_vectors['r'], shift_vectors['u'], shift_vectors['z'],
-                  num_stars['g'], num_stars['i'], num_stars['r'], num_stars['u'], num_stars['z'])
+                  len_stars(stars['g']), len_stars(stars['i']), len_stars(stars['r']), len_stars(stars['u']), len_stars(stars['z']),
+                  print_stars(stars['g']), print_stars(stars['i']), print_stars(stars['r']), print_stars(stars['u']), print_stars(stars['z']))
 
         if run_tests:
             prints('Running tests...')

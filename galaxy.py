@@ -109,13 +109,13 @@ class Galaxy:
 
 class Star:
 
-    def __init__(self, x, y, class_prob = None, weight = None, x_spread = None, y_spread = None):
+    def __init__(self, x, y, class_prob = None, weight = None, gamma = None, alpha = None):
         self.x = x
         self.y = y
         self.class_prob = class_prob
         self.weight = weight
-        self.x_spread = x_spread
-        self.y_spread = y_spread
+        self.gamma = gamma
+        self.alpha = alpha
 
     def __str__(self):
         return '({}, {})'.format(self.x, self.y)
