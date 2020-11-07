@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import subprocess
+import shutil
 from collections import OrderedDict
 from astropy.io import fits
 from galaxy import Galaxy
@@ -70,10 +71,9 @@ def get_sextractor_points(path):
             os.remove('star_out.txt')
 
 
-def load_galaxy(galpath, star_class_perc):
+def load_galaxy(galpath, galname, star_class_perc):
     """Loads the galaxy loacated at galpath and returns a Galaxy object""" 
     gal_dict = OrderedDict()
-    galname = os.path.basename(galpath)
     for color in ('g', 'i', 'r', 'u', 'z'):
         p = os.path.join(galpath, color + '.fits')
         if os.path.exists(p):
@@ -111,7 +111,7 @@ def load_galaxy(galpath, star_class_perc):
             if os.path.exists(p3):
                 star_dict.update({color: get_sextractor_points(p3)})
                 continue
-        except IndexError:#SextractorError:
+        except SextractorError:
             return galpath
 
     return Galaxy(gal_dict, star_dict, star_class_perc, galname)
@@ -119,8 +119,31 @@ def load_galaxy(galpath, star_class_perc):
 
 def load_galaxies(in_dir, star_class_perc):
     """Generator that yields galaxy objects for each galaxy in in_dir.  This assumes
-       that in_dir exists and that the the directory structure follows what is expected."""
-
+       that in_dir exists and that the the directory structure follows what is expected.
+       Returns a galaxy object if sucessfull, the galaxy name if unsucessful."""
+   
     for galname in os.listdir(in_dir):
-        yield load_galaxy(os.path.join(in_dir, galname), star_class_perc)
+        try:
+            tmpdir = 'temp_{}'.format(galname)
+            os.mkdir(tmpdir)
+            # if the galaxy is zipped, unzip it
+            files = os.listdir(os.path.join(in_dir, galname))
+            if type(files) != list or len(files) < 1: yield galname
+            zipped = False
+            if '.xz' in files[0]:
+                zipped = True
+                for f in files:
+                    os.system('xz -d -c {} > {}'.format(os.path.join(in_dir, galname, f), os.path.join(tmpdir, f[:-3])))
+            
+            if zipped:
+                yield load_galaxy(tmpdir, galname, star_class_perc)
+            else:
+                yield load_galaxy(os.path.join(in_dir, galname), galname, star_class_perc)
+            
+            try: shutil.rmtree(tmpdir)
+            except: pass
+        
+        except:
+            yield galname
+
      

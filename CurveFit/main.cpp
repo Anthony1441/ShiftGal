@@ -21,15 +21,14 @@ void gaussian(const real_1d_array& c, const real_1d_array& x, double& func, void
     c[3] = gamma
     c[4] = alpha
     */
-    func = c[0] * pow(1 + (pow(x - c[1], 2) + pow(y - c[1], 2)) / pow(c[3], 2), -1 * c[4]);
+    func = c[0] * pow(1.0 + ((pow(x[0] - c[1], 2) + pow(x[1] - c[2], 2)) / pow(c[3], 2)), -1.0 * c[4]);
 }
 
 
 int main(int argc, char* argv[])
 {
     
-    // fits a curve and prints out the brightest point
-	if (argc != 4) return -1;
+	if (argc != 6) return -1;
 
 	try
     {
@@ -38,8 +37,8 @@ int main(int argc, char* argv[])
 	    real_1d_array c = argv[3];
 
         // bounds for each parameter
-        real_1d_array boundUpper = "[10000, 10, 10, 100, 100]";
-        real_1d_array boundLower = "[0.0, 0.0, 0.0, 0.0, 0.0]";
+        real_1d_array boundLower = argv[4];
+        real_1d_array boundUpper= argv[5];
     
         double epsx = 0.000001;
         ae_int_t maxits = 0;

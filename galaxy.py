@@ -4,12 +4,11 @@ from copy import copy
 import load_gals
 
 
-class InvalidGalColorError(Exception):
-    pass
+class InvalidGalColorError(Exception): pass
 
+class CroppingError(Exception): pass
 
-class GalsAndStarsDoNotContainTheSameWavebandsError(Exception):
-    pass
+class GalsAndStarsDoNotContainTheSameWavebandsError(Exception): pass
 
 
 class Galaxy:
@@ -61,15 +60,21 @@ class Galaxy:
         top /= float(self.num_wb); bottom /= float(self.num_wb)
 
         center_x, center_y = self.width / 2, self.height / 2
-        size = int(max(center_x - left, right - center_x, center_y - top, bottom - center_y))
-        
+        size = int(max(center_x - left, right - center_x, center_y - top, bottom - center_y)) + 2
         left, right = int(center_x - size), int(center_x + size)
         top, bottom = int(center_y - size), int(center_y + size)
-        
+
         # make sure the values found are valid
-        assert top >= 0; assert left >= 0; 
-        assert bottom <= self.height; assert right <= self.width
-        
+        try:
+            assert top >= 0; assert left >= 0; 
+            assert bottom <= self.height; assert right <= self.width
+        except AssertionError:
+            size -= 2
+            left, right = int(center_x - size), int(center_x + size)
+            top, bottom = int(center_y - size), int(center_y + size)
+            if top < 0 or left < 0 or bottom > self.height or right > self.width:
+                raise CroppingError
+
         # crop the images
         for c in self.gal_dict.keys():
             self.gal_dict[c][0].data = self.gal_dict[c][0].data[top:bottom, left:right]
@@ -109,14 +114,16 @@ class Galaxy:
 
 class Star:
 
-    def __init__(self, x, y, class_prob = None, weight = None, gamma = None, alpha = None):
+    def __init__(self, x, y, class_prob = None, gamma = None, alpha = None):
         self.x = x
         self.y = y
         self.class_prob = class_prob
-        self.weight = weight
         self.gamma = gamma
         self.alpha = alpha
 
+    def info(self):
+        return '({}, {}, {}, {}, {})'.format(self.x, self.y, self.gamma, self.alpha, self.class_prob)
+    
     def __str__(self):
         return '({}, {})'.format(self.x, self.y)
 
