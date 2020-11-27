@@ -26,7 +26,7 @@ class NoStarsFitError(Exception): pass
 
 class StarsNotWithinSigmaError(Exception): pass
 
-class FluxNotPreserved(Exception): pass
+class FluxNotPreservedError(Exception): pass
 
 class ImageTooLargeError(Exception): pass
 
@@ -43,9 +43,8 @@ class NoError(Exception): pass
 tsv_out = None
 
 
-def filter_stars(src, trg, min_gamma = 1, max_gamma = 3, max_dist = np.sqrt(2)):
+def filter_stars(src, trg, min_gamma = 1, max_gamma = 10, max_dist = np.sqrt(2)):
     """ Filters out stars that are too small, too wide, or whose matching star is too far"""
-
     m_src, m_trg = [], []
     for i in range(len(src)):
         dist = np.sqrt((src[i].x - trg[i].x)**2 + (src[i].y - trg[i].y)**2)
@@ -59,26 +58,23 @@ def filter_stars(src, trg, min_gamma = 1, max_gamma = 3, max_dist = np.sqrt(2)):
     return m_src, m_trg
 
 
-def find_like_points(src, trg):
+def find_like_points(src, trg, max_dist = 5):
     """Finds points in trg that are within max_dist distance
        from of a point in src and choses the smallest one.  
        Returns the points found in the same order."""
-
     m_src, m_trg = [], []
 
     for trg_star in trg:
         m_star, m_dist = None, np.inf
         for src_star in src:
             temp_dist = np.sqrt((src_star.x - trg_star.x)**2 + (src_star.y - trg_star.y)**2)
-            if temp_dist < m_dist:
+            if temp_dist < m_dist and temp_dist < max_dist:
                 m_star = src_star
                 m_dist = temp_dist
         
         if m_star is not None:
             m_src.append(m_star)
             m_trg.append(trg_star)
-
-        m_star, m_dist = None, np.inf
 
     assert len(m_src) == len(m_trg)    
     return m_src, m_trg
@@ -89,11 +85,13 @@ def average_vector(m_src, m_trg, maxsigma = 2):
        It excludes points outside of maxsigma * std_dev of the mean."""
     # calculate the vector bettween each star and its source star
     vecs = np.array(m_src) - np.array(m_trg)
-    mu, dev = np.mean(vecs), np.std(vecs) * maxsigma
+    return np.mean(vecs, axis = 0)
     # only vectors that are within one sigma on either side of the mean
     avg = np.mean([v for v in vecs if abs(v[0] - mu[0]) < dev[0] and abs(v[1] - mu[1]) < dev[1]], axis = 0)
     # if there are no points in that range, then the stars don't agree enough for the shift to be trusted
-    if np.any(np.isnan(avg)): raise StarsNotWithinSigmaError
+    if np.any(np.isnan(avg)): 
+        print vecs, mu, dev
+        raise StarsNotWithinSigmaError
     return avg
 
 
@@ -103,7 +101,7 @@ def shift_img(gal, vector, upscale_factor, gal_dict = dict(), color = 'NoColor',
     if vector[0] == 0 and vector[1] == 0:
         gal_dict.update({color: gal}) 
         print('Shifted waveband {} by {} with a flux error of {} / {}'.format(color, tuple(vector), 0, np.sum(gal)))
-        return
+        return gal
     
     padding = 1
     # if the image is large enough then its area is greater than 2^31 pixels which causes an overflow error
@@ -114,7 +112,7 @@ def shift_img(gal, vector, upscale_factor, gal_dict = dict(), color = 'NoColor',
             size += 10
         padding = int((size - gal.shape[0] * upscale_factor) / (2 * upscale_factor)) + 1
         if padding < 1: padding = 1
-        gal = np.pad(gal, padding, 'constant')
+        if check_count: gal = np.pad(gal, padding, 'constant')
     
     upscale = cv2.resize(gal, dsize = tuple(np.array(gal.shape) * upscale_factor), interpolation = cv2.INTER_LANCZOS4)
     upscale = np.roll(upscale, int(round(vector[0] * upscale_factor)), axis = 1)
@@ -123,7 +121,7 @@ def shift_img(gal, vector, upscale_factor, gal_dict = dict(), color = 'NoColor',
 
     input_count, current_count = np.sum(gal), np.sum(upscale)
     # check to make sure that the output photon count is within 0.05% of the original
-    err_perc = 0.001
+    err_perc = 0.005
     if check_count and (current_count > input_count + input_count * err_perc or current_count < input_count - input_count * err_perc):
         raise FluxNotPreservedError
  
@@ -192,8 +190,8 @@ def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
             stars_dict.update({color: template_stars}) 
         else:
             m_src, m_trg = find_like_points(template_stars, stars)
-        
-            # if no points in it match the template, skip it
+            
+            # if not enough points in it match the template, skip it
             if len(m_src) < min_stars_all:
                 print('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)))
                 color_vectors.update({color: None})
@@ -294,7 +292,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, compress
                     os.system('xz -9 -e {}'.format(os.path.join(outdir, f)))
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, min_wavebands, run_tests, sp_path, upscale_factor, crop_images, run_in_parallel, max_memory, compressOutput):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, min_wavebands, upscale_factor, crop_images, run_in_parallel, max_memory, compressOutput):
 
     try:
         # set up output directory 
@@ -337,10 +335,13 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         shift_imgs = shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor, run_in_parallel, max_memory)    
 
         def len_stars(stars):
-            return 0 if stars is None else len(stars)
+            return 'NULL'  if stars is None else len(stars)
 
         def print_stars(stars):
-            return 'NULL' if stars is None else [s.info() for s in stars]
+            return 'NULL' if stars is None else tuple((s.info() for s in stars))
+
+        def print_vec(vec):
+            return 'NULL' if vec is None else str(tuple(vec))
 
         # save shifed average for testing purposes
         avg = np.zeros(galaxy.images('i').shape)
@@ -351,14 +352,10 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         # save output images and info
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, compressOutput)
         tsv_print(str(galaxy.name), min_stars_template, min_stars_all, upscale_factor, template_color,
-                  shift_vectors['g'], shift_vectors['i'], shift_vectors['r'], shift_vectors['u'], shift_vectors['z'],
+                  print_vec(shift_vectors['g']), print_vec(shift_vectors['i']), print_vec(shift_vectors['r']), print_vec(shift_vectors['u']), print_vec(shift_vectors['z']),
                   len_stars(stars['g']), len_stars(stars['i']), len_stars(stars['r']), len_stars(stars['u']), len_stars(stars['z']),
                   print_stars(stars['g']), print_stars(stars['i']), print_stars(stars['r']), print_stars(stars['u']), print_stars(stars['z']))
 
-        if run_tests:
-            print('Running tests...')
-            testing.test_shifts(os.path.join(p, 'testing'), galaxy.images(template_color), template_cpy, galaxy.name, 10, sp_path) 
-        
     except NotEnoughViableWavebandsError:
         print 'Not enough viable wavebands ({} of {} needed), skipping galaxy'.format(num_viable, min_wavebands)
         try: shutil.rmtree(p)
@@ -369,7 +366,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         try: shutil.rmtree(p)
         except: pass
 
-    except FluxNotPreserved:
+    except FluxNotPreservedError:
         print 'Error in flux preservation in shifted images, skipping galaxy'
         try: shutil.rmtree(p)
         except: pass
@@ -399,6 +396,10 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
    
    
 if __name__ == '__main__':
+    
+    #testing.test_paper_results()
+    #exit(1)
+    
     # get all of the arguments / option
     parser = argparse.ArgumentParser()
     parser.add_argument('inDir', help = 'A directory containing the input galaxies, see -in_format for how this should be structured.')
@@ -415,9 +416,6 @@ if __name__ == '__main__':
     parser.add_argument('-runInParallel', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Will process wavebands in parallel, this requires the system to have enough memory to store all upscaled wavebands simultaneously.')
     mem = virtual_memory().total / 1024.0**3
     parser.add_argument('-maxMemory', default = mem, type = float, help = 'The maxmimum amount of memory (in GB) the process can use.  At least 16GB is recommended but more will be needed for larger images and larger upscale factors.')
-
-    parser.add_argument('-runTests', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If not 0 then random shifts will be applied to the template waveband (back and forth) the number of times given.  This is used to see the error in shifting.')
-    parser.add_argument('-spPath', default = '{}/scripts/SpArcFiRe'.format(os.getenv('SPARCFIRE_HOME')), help = 'The path to the local install of SpArcFiRe.')
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -449,20 +447,14 @@ if __name__ == '__main__':
     try:
         if not os.path.isdir(args.outDir):
             os.mkdir(args.outDir)
-    
     except:
         print 'out_dir', args.outDir, 'could not be created.'
         exit(1)
 
     t = ('True', 'true', '1')
-    args.runTests = True if args.runTests in t else False
     args.cropImages = True if args.cropImages in t else False
     args.runInParallel = True if args.runInParallel in t else False
     args.compressOutput = True if args.compressOutput in t else False
-
-    if args.runTests and not os.path.exists(args.spPath):
-        print 'The path to your local install of SpArcFiRe install is not valid: {}.'.format(args.spPath)
-        exit(1)
     
     tsv_out = open(os.path.join(args.outDir, 'info.tsv'), 'w')
     tsv_print('objID', 'min_stars_template', 'min_stars_all', 'upscale_factor', 'template_color', 
@@ -482,7 +474,7 @@ if __name__ == '__main__':
             print 'Skipping {}, galaxy already exists in output directory'.format(gal.name)
             continue
         
-        process_galaxy(gal, args.outDir, args.borderSize, args.saveType, args.minStarsTemplate, args.minStarsAll, args.minWavebands, args.runTests, args.spPath, args.upscaleFactor, args.cropImages, args.runInParallel, args.maxMemory * 1024**3, args.compressOutput)
+        process_galaxy(gal, args.outDir, args.borderSize, args.saveType, args.minStarsTemplate, args.minStarsAll, args.minWavebands, args.upscaleFactor, args.cropImages, args.runInParallel, args.maxMemory * 1024**3, args.compressOutput)
         print ''
 
     tsv_out.close()

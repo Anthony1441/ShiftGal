@@ -10,36 +10,57 @@ from galaxy import Star
 
 class SextractorError(Exception): pass
 
-def load_fits(path):
-    f = fits.open(path, ignore_missing_end = True)
-    img = np.copy(f[0].data)
-    f.close()
+def load_fits(path, returnObj = False):
+   
+    if '.xz' in path:    
+        tmp = os.path.join('tmp', str(np.random.rand()) + 'temp.fits')
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+        os.system('xz -d -c {} > {}'.format(path, tmp))
+        f = fits.open(tmp, ignore_missing_end = True)
+        if returnObj: return f
+        img = np.copy(f[0].data)
+        f.close()
+        os.remove(tmp)
+    else:
+        f = fits.open(path, ignore_missing_end = True)
+        if returnObj: return f
+        img = np.copy(f[0].data)
+        f.close()
+    
     return img
 
-def save_fits(img, path):
-    fits.HDUList([fits.PrimaryHDU(data = img)]).writeto(path, overwrite = True)
+
+def save_fits(img, path, isObj = False):
+    if isObj:
+        img.writeto(path, overwrite = True)
+    else:
+        fits.HDUList([fits.PrimaryHDU(data = img)]).writeto(path, overwrite = True)
+
 
 def get_seg_img(img):
     """Runs Source Extractor on the given FITS image and
        returns the segmenation image"""
     
     seg = None
-    save_fits(img, 'temp.fits')
+    rnd = str(np.random.ranf())
+    save_fits(img, os.path.join('tmp', rnd + 'temp.fits'))
     try:
-        proc = subprocess.Popen(['./sex', 'temp.fits', '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', 'temp_seg.fits', '-CATALOG_NAME', 'temp_seg.txt'], stderr = subprocess.PIPE) 
+        proc = subprocess.Popen(['./sex', os.path.join('tmp', rnd + 'temp.fits'), '-CHECKIMAGE_TYPE', 'SEGMENTATION', '-CHECKIMAGE_NAME', os.path.join('tmp', rnd + 'temp_seg.fits'), '-CATALOG_NAME', os.path.join('tmp', rnd + 'temp_seg.txt')], stderr = subprocess.PIPE) 
         if proc.wait() != 0: 
             raise SextractorError
     
-        seg = fits.open('temp_seg.fits', ignore_missing_end = True)
+        seg = fits.open(os.path.join('tmp', rnd + 'temp_seg.fits'), ignore_missing_end = True)
         seg_img = seg[0].data
     
     except:
         raise SextractorError
     
     finally:
-        if os.path.exists('temp_seg.fits'): os.remove('temp_seg.fits')
-        if os.path.exists('temp_seg.txt'): os.remove('temp_seg.txt')
-        if os.path.exists('temp.fits'): os.remove('temp.fits')
+        if os.path.exists(os.path.join('tmp', rnd + 'temp_seg.fits')): os.remove(os.path.join('tmp', rnd + 'temp_seg.fits'))
+        if os.path.exists(os.path.join('tmp', rnd + 'temp_seg.txt')): os.remove(os.path.join('tmp', rnd + 'temp_seg.txt'))
+        if os.path.exists(os.path.join('tmp', rnd + 'temp.fits')): os.remove(os.path.join('tmp', rnd + 'temp.fits'))
         if seg is not None: seg.close()
 
     return seg_img
@@ -50,12 +71,13 @@ def get_sextractor_points(path):
        an array of star objects"""
     f = None 
     try:
-        proc = subprocess.Popen(['./sex', path, '-CATALOG_NAME', 'star_out.txt'], stderr = subprocess.PIPE)
+        txt_out = os.path.join('tmp', str(np.random.ranf()) + '_star_out.txt')
+        proc = subprocess.Popen(['./sex', path, '-CATALOG_NAME', txt_out], stderr = subprocess.PIPE)
         if proc.wait() != 0: 
             raise Exception
         stars = []
     
-        f = open('star_out.txt', 'r') 
+        f = open(txt_out, 'r') 
         for line in f.readlines()[4:]:
             values = ' '.join(line.rstrip().split()).split()
             stars.append(Star(float(values[0]), float(values[1]), float(values[3])))
@@ -68,7 +90,8 @@ def get_sextractor_points(path):
     finally:
         if f is not None:
             f.close()
-            os.remove('star_out.txt')
+            try: os.remove(txt_out)
+            except: pass
 
 
 def load_galaxy(galpath, galname, star_class_perc):
@@ -123,8 +146,9 @@ def load_galaxies(in_dir, star_class_perc):
        Returns a galaxy object if sucessfull, the galaxy name if unsucessful."""
    
     for galname in os.listdir(in_dir):
+        tmpdir = None
         try:
-            tmpdir = 'temp_{}'.format(galname)
+            tmpdir = os.path.join('tmp', 'temp_{}'.format(galname))
             os.mkdir(tmpdir)
             # if the galaxy is zipped, unzip it
             files = os.listdir(os.path.join(in_dir, galname))
@@ -135,15 +159,14 @@ def load_galaxies(in_dir, star_class_perc):
                 for f in files:
                     os.system('xz -d -c {} > {}'.format(os.path.join(in_dir, galname, f), os.path.join(tmpdir, f[:-3])))
             
-            if zipped:
-                yield load_galaxy(tmpdir, galname, star_class_perc)
-            else:
-                yield load_galaxy(os.path.join(in_dir, galname), galname, star_class_perc)
+            if zipped: yield load_galaxy(tmpdir, galname, star_class_perc)
+            else: yield load_galaxy(os.path.join(in_dir, galname), galname, star_class_perc)
             
-            try: shutil.rmtree(tmpdir)
-            except: pass
-        
         except:
             yield galname
-
+        
+        finally:
+            if tmpdir is not None:
+                try: shutil.rmtree(tmpdir)
+                except: pass
      

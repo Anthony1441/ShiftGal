@@ -13,145 +13,20 @@ import sys
 import subprocess
 import load_gals
 import find_center
-
-class SpArcFiReError(Exception): pass
-class_prob = 0.06
-
-
-def run_sparcfire(org, img_data, irange, outdir, sp_path):
-    """Runs SpArcFiRe on the org and ima_data, then returns the difference in galaxy center for org and img_data"""
-    
-    try:
-        sf_in, sf_tmp, sf_out = os.path.join(outdir, 'sf_in'), os.path.join(outdir, 'sf_tmp'), os.path.join(outdir, 'sf_out')
-        os.mkdir(sf_in); os.mkdir(sf_tmp); os.mkdir(sf_out)
-        
-        for i in range(irange):
-            os.mkdir(os.path.join(sf_in, str(i)))
-            os.mkdir(os.path.join(sf_tmp, str(i)))
-            os.mkdir(os.path.join(sf_out, str(i)))
-            load_gals.save_fits(img_data[i], os.path.join(sf_in, str(i), 'temp.fits'))
-       
-        # get starting image center
-        os.mkdir(os.path.join(sf_in, 'org'))
-        os.mkdir(os.path.join(sf_tmp, 'org'))
-        os.mkdir(os.path.join(sf_out, 'org'))
-        load_gals.save_fits(org, os.path.join(sf_in, 'org', 'temp.fits'))
-        proc = subprocess.Popen([sp_path, '-convert-FITS', os.path.join(sf_in, 'org'), os.path.join(sf_tmp, 'org'), os.path.join(sf_out, 'org'), '-generateFitQuality', '0', '-writeBulgeMask', '1']) 
-
-        # run each cycled image in parallel
-        procs = [subprocess.Popen([sp_path, '-convert-FITS', os.path.join(sf_in, str(i)), os.path.join(sf_tmp, str(i)), os.path.join(sf_out, str(i)), '-generateFitQuality', '0', '-writeBulgeMask', '1']) for i in range(irange)]
-        for p in procs:
-            p.wait()
-
-        proc.wait() 
-        f = genfromtxt(os.path.join(sf_out, 'org', 'galaxy.tsv'), skip_header = 1)
-        pos = (f[20], f[21])
-
-        #once they're done, calculate the change in position
-        positions = []
-        for i in range(irange):
-            f = genfromtxt(os.path.join(sf_out, str(i), 'galaxy.tsv'), skip_header = 1)
-            positions.append((f[20], f[21]))
-
-        return np.array(positions)
-    
-    except:
-        raise SpArcFiReError
-    
-    finally:
-        # clean up all output
-        try:
-            shutil.rmtree(sf_in); shutil.rmtree(sf_tmp); shutil.rmtree(sf_out)
-            for p in os.listdir('.'):
-                if '_settings.txt' in p or p in ('SpArcFiRe-stdin.stdin.txt', 'arc2csv.log', 'galaxy_arcs.tsv'):
-                    os.remove(p)
-        except: pass
+import glob
+import galaxy
 
 
-def test_single_shift(outdir, img, sp_path):
-    """Shifts the image only once and checks the positional error"""
-   
-    print '\nRunning single shift tests...\n'
+class_prob = 0.9
+upscale_factor = 100
 
-    outdir = os.path.abspath(outdir)
-    r = np.arange(0, 1.1, 0.1)
-    cycle_imgs = [] 
-    org = np.copy(img)
-    
-    for delta in r:
-        vector = np.array([delta, delta])
-        print 'Running delta = {}'.format(vector)
-        img = shift_gal.shift_img(img, vector, check_count = False)
-        cycle_imgs.append(np.copy(img))
-        img = np.copy(org) 
-    
-    print 'Saving graphs...'
-    dist = [np.sqrt(s**2 + s**2) for s in r]
-    
-    ''' 
-    try:
-        pos = run_sparcfire(org, cycle_imgs, 10, outdir, sp_path)
-        print len(r), len(pos)
-        pos_diff = [np.sqrt((pos[0][0] + r[i] - pos[i][0])**2 + (pos[0][1] + r[i] - pos[i][1])**2) for i in range(len(r))]
-    
-        plt.figure()
-        plt.plot(dist, pos_diff)
-        plt.title('Difference in Predicted Galaxy Center')
-        plt.ylabel('Difference in Pixels')
-        plt.xlabel('Distance')
-        plt.savefig(os.path.join(outdir, 'no_cycle_pos_diff.png'))
-        
-        plt.figure()
-        fig, ax = plt.subplots()
-        pos[:,0] -= pos[0][0]
-        pos[:,1] -= pos[0][1]
-        ax.scatter(pos[:,0], pos[:,1], s = 4)
-        for i, lbl in enumerate(r):
-            ax.annotate(round(lbl, 2), (pos[i][0], pos[i][1]))
-    
-        plt.title('Galaxy Center Positions')
-        plt.savefig(os.path.join(outdir, 'single_shift_gal_diff.png'))
-    except:
-        print 'SpArcFiRe error encoutnered, continuing...'
-
-    '''
-
-    org_stars, star_diffs = [], []
-    p = os.path.join(outdir, 'temp.fits')
-    load_gals.save_fits(org, p)
-    
-    for s in load_gals.get_sextractor_points(p):
-        if s.class_prob > class_prob:
-            try: org_stars.append(find_center.estimate_center(org, s))
-            except: pass
-
-    for i in range(len(r)):
-        load_gals.save_fits(cycle_imgs[i], p)
-        stars = []
-        for s in load_gals.get_sextractor_points(p):
-            if s.class_prob > class_prob:
-                try: stars.append(find_center.estimate_center(cycle_imgs[i], s))
-                except: pass
-        src, trg = shift_gal.find_like_points(org_stars, stars)
-        total_dist = sum([np.sqrt((s.x + r[i] - t.x)**2 + (s.y + r[i]- t.y)**2) for s, t in zip(src, trg)])
-        star_diffs.append(np.nan if len(src) == 0 else total_dist / len(src))
-    os.remove(p)
-
-    plt.figure()
-    plt.plot(dist, star_diffs)
-    plt.title('Mean Difference in Star Location')
-    plt.xlabel('Shift Distance in Pixels')
-    plt.ylabel('Mean Location Error')
-    plt.savefig(os.path.join(outdir, 'single_shift_star_diff.png'))
-    
-    return dist, star_diffs
-
-
-def test_double_shift(outdir, img, sp_path):
+def test_flux_error(outdir, gal, vectors):
     """Shifts the galaxy back and forth and checks flux and positional error"""
         
     print '\nRunning double shift tests...\n'
-
+    
+    #img = np.pad(gal[0].data[137:187, 137:187], 2, 'constant')
+    img = np.pad(gal[0].data, 2, 'constant')
     outdir = os.path.abspath(outdir)
     r = np.arange(0, 1.1, 0.1)
     cycle_imgs, mean_diff, mean_diff_gal, mean_diff_bg = [], [], [], []
@@ -160,18 +35,17 @@ def test_double_shift(outdir, img, sp_path):
     seg_img = load_gals.get_seg_img(org)
     gal_val = seg_img[int(seg_img.shape[0] / 2.0), int(seg_img.shape[1] / 2.0)]
     
-    for delta in r:
-        vector = np.array([delta, delta])
+    for vector in vectors:
         print 'Running delta = {}'.format(vector)
-        img = shift_gal.shift_img(img, vector, check_count = False)
-        img = shift_gal.shift_img(img, vector * -1, check_count = False)
+        img = shift_gal.shift_img(img, vector, upscale_factor, check_count = False)
+        img = shift_gal.shift_img(img, vector * -1, upscale_factor, check_count = False)
         
         diff = np.abs(org - img)
         mean_diff.append(np.mean(diff))
         mean_diff_gal.append(np.mean(diff[seg_img == gal_val]))
         mean_diff_bg.append(np.mean(diff[seg_img == 0]))
 
-        if delta == 0.5:
+        if vector[0] == 0.5:
             diff = img - org
             load_gals.save_fits(img, os.path.join(outdir, 'shifted_{}.fits'.format(vector)))
             load_gals.save_fits(diff, os.path.join(outdir, 'residual_{}.fits'.format(vector)))
@@ -182,6 +56,7 @@ def test_double_shift(outdir, img, sp_path):
             print 'Original (Galaxy Pixels):     ({}, {})'.format(np.min(org[seg_img == gal_val]), np.max(org[seg_img == gal_val]))
             print 'Original (Background Pixels): ({}, {})\n'.format(np.min(org[seg_img == 0]), np.max(org[seg_img == 0]))
  
+            
             print 'Shifted:                      ({}, {})'.format(np.min(img), np.max(img))
             print 'Shifted (Galaxy Pixels):      ({}, {})'.format(np.min(img[seg_img == gal_val]), np.max(img[seg_img == gal_val]))
             print 'Shifted (Background Pixels):  ({}, {})\n'.format(np.min(img[seg_img == 0]), np.max(img[seg_img == 0]))
@@ -197,27 +72,8 @@ def test_double_shift(outdir, img, sp_path):
 
     dist = [np.sqrt(s**2 + s**2) for s in r]
     
-    plt.figure()
-    plt.plot(dist, mean_diff)
-    plt.title('Mean Absolute Flux Error')
-    plt.xlabel('Shift Distance in Pixels')
-    plt.ylabel('Mean Flux Error')
-    plt.savefig(os.path.join(outdir, 'cycle_flux_diff.png'))
-    
-    plt.figure()
-    plt.plot(dist, mean_diff_gal)
-    plt.title('Mean Absolute Flux Error (Galaxy Only)')
-    plt.xlabel('Shift Distance in Pixels')
-    plt.ylabel('Mean Flux Error')
-    plt.savefig(os.path.join(outdir, 'cycle_flux_diff_galaxy.png'))
-    
-    plt.figure()
-    plt.plot(dist, mean_diff_bg)
-    plt.title('Mean Absolute Flux Error (Background Only)')
-    plt.xlabel('Shift Distance in Pixels')
-    plt.ylabel('Mean Flux Error')
-    plt.savefig(os.path.join(outdir, 'cycle_flux_diff_background.png'))
- 
+    return mean_diff, mean_diff_gal, mean_diff_bg
+
     for i in range(len(cycle_imgs)):
         plt.figure()
         plt.scatter(org.flatten(), np.abs(org - cycle_imgs[i]).flatten(), s = 2)
@@ -235,31 +91,7 @@ def test_double_shift(outdir, img, sp_path):
         plt.ylabel('Percent Error in Flux')
         plt.ylim(-3, 60)
         plt.savefig(os.path.join(outdir, 'cycle_flux_pixel_error_{}.png'.format(r[i])))
-    '''
-    try:
-        pos = run_sparcfire(org, cycle_imgs, 10, outdir, sp_path)
-        pos_diff = [np.sqrt((pos[0][0] - pos[i][0])**2 + (pos[0][1] - pos[i][1])**2) for i in range(len(pos))]
-        plt.figure()
-        plt.plot(dist, pos_diff)
-        plt.title('Difference in Predicted Galaxy Center')
-        plt.ylabel('Difference in Pixels')
-        plt.xlabel('Distance')
-        plt.savefig(os.path.join(outdir, 'linear_pos_diff.png'))
-
-        plt.figure()
-        fig, ax = plt.subplots()
-        pos[:,0] -= pos[0][0]
-        pos[:,1] -= pos[0][1]
-        ax.scatter(pos[:,0], pos[:,1], s = 4)
-        for i, lbl in enumerate(r):
-            ax.annotate(round(lbl, 2), (pos[i][0], pos[i][1]))
-    
-        plt.title('Galaxy Center Positions')
-        plt.savefig(os.path.join(outdir, 'linear_pos.png'))
-    except:
-        print 'SpArcFiRe error encoutnered, continuing...'
-    '''
-    
+   
     org_stars, star_diffs = [], []
     p = os.path.join(outdir, 'temp.fits')
     load_gals.save_fits(org, p)
@@ -289,173 +121,6 @@ def test_double_shift(outdir, img, sp_path):
     plt.savefig(os.path.join(outdir, 'cycle_star_diff.png'), bbox_inches = 'tight')
     
     return dist, star_diffs
-
-
-def test_random_shifts(outdir, img, cycles, sp_path):
-    """Shifts the galaxy randomly back and forth *cycles* times and checks flux and positional error"""
-        
-    print '\nRunning random shift tests...\n'
-
-    org = np.copy(img)
-    mean_diff, mean_diff_gal, mean_diff_bg, cycle_imgs = [], [], [], []
-    seg_img = load_gals.get_seg_img(org)
-    gal_val = seg_img[int(seg_img.shape[0] / 2.0), int(seg_img.shape[1] / 2.0)]
-    
-    for i in range(cycles):
-        vector = np.array([-1.0, -1.0]) + 2 * np.random.random(2)
-        print 'Running shift {}, cycle {}'.format(vector, i + 1)
-        img = shift_gal.shift_img(img, vector)
-        img = shift_gal.shift_img(img, vector * -1)
-        diff = np.abs(org - img)
-        mean_diff.append(np.mean(diff))
-        mean_diff_gal.append(np.mean(diff[seg_img == gal_val]))
-        mean_diff_bg.append(np.mean(diff[seg_img == 0]))
-        cycle_imgs.append(np.copy(img))
-
-    print 'Saving graphs...'
-    plt.figure()
-    plt.plot(np.arange(1, cycles + 1), mean_diff)
-    plt.xlim(0, cycles + 1)
-    plt.title('Mean Absolute Flux Error')
-    plt.xlabel('Cycle')
-    plt.ylabel('Mean Flux Error')
-    plt.savefig(os.path.join(outdir, 'random_mean_diff.png'))
-    
-    plt.figure()
-    plt.plot(np.arange(1, cycles + 1), mean_diff_gal)
-    plt.xlim(0, cycles + 1)
-    plt.title('Mean Absolute Flux Error (Galaxy Only)')
-    plt.xlabel('Cycle')
-    plt.ylabel('Mean Flux Error')
-    plt.savefig(os.path.join(outdir, 'random_mean_diff_galaxy.png'))
-    
-    plt.figure()
-    plt.plot(np.arange(1, cycles + 1), mean_diff_bg)
-    plt.xlim(0, cycles + 1)
-    plt.title('Mean Absolute Flux Error (Background Only)')
-    plt.xlabel('Cycle')
-    plt.ylabel('Mean Flux Error')
-    plt.savefig(os.path.join(outdir, 'random_mean_diff_background.png'))
-    
-    '''
-    try:
-        pos = run_sparcfire(org, cycle_imgs, cycles, outdir, sp_path)
-        pos_diff = [np.sqrt((pos[0][0] - pos[i][0])**2 + (pos[0][1] - pos[i][1])**2) for i in range(len(pos))]
-        plt.figure()
-        plt.plot(np.arange(1, cycles + 1), pos_diff)
-        plt.xlim(0, cycles + 1)
-        plt.title('Difference in Predicted Galaxy Center')
-        plt.ylabel('Difference in Pixels')
-        plt.xlabel('Cycle')
-        plt.savefig(os.path.join(outdir, 'pos_diff.png'))
-
-        plt.figure()
-        fig, ax = plt.subplots()
-        pos[:,0] -= pos[0][0]
-        pos[:,1] -= pos[0][1]
-        ax.scatter(pos[:,0], pos[:,1], s = 4)
-        for i, lbl in enumerate(range(len(pos))):
-            ax.annotate(lbl, (pos[i][0], pos[i][1]))
-        plt.title('Galaxy Center Positions')
-        plt.savefig(os.path.join(outdir, 'pos.png'))
-
-    except:
-        print 'SpArcFiRe error encountered, continuing...'
-
-    '''
-    star_diffs = []
-    p = os.path.join(outdir, 'temp.fits')
-    load_gals.save_fits(org, p)
-    org_stars = [s for s in load_gals.get_sextractor_points(p) if s.class_prob > 0.09]
-    os.remove(p)
-    
-    for i in range(cycles):
-        load_gals.save_fits(cycle_imgs[i], p)
-        stars = [s for s in load_gals.get_sextractor_points(p) if s.class_prob > 0.09]
-        src, trg = shift_gal.find_like_points(org_stars, stars)
-        total_dist = sum([np.sqrt((i.x - j.x)**2 + (i.y - j.y)**2) for i, j in zip(src, trg)])
-        star_diffs.append(total_dist / len(src))
-        os.remove(p)
-
-    plt.figure()
-    plt.plot(np.arange(1, cycles + 1), star_diffs)
-    plt.xlim(0, cycles + 1)
-    plt.title('Mean Difference in Star Location')
-    plt.xlabel('Cycle')
-    plt.ylabel('Mean Location Error')
-    plt.savefig(os.path.join(outdir, 'random_star_diff.png'))
-
-
-def test_upscale_save_data(outdir, data_file, img, name):
-
-    vecs = [l.rstrip().split(' ') for l in open('shifts.txt').readlines()]
-    vecs = [np.array((float(s[0]), float(s[1]))) for s in vecs]
-    data = name + '\t'
-
-    for vec in vecs:    
-        for i in (100, 200, 400, 600, 800, 1000):
-            print 'Running vec {}, upscale factor {}'.format(vec, i)
-            img_cpy = np.copy(img)
-            img_cpy = shift_gal.shift_img(img_cpy, vec, i, check_count = False)
-            img_cpy = shift_gal.shift_img(img_cpy, vec * -1, i, check_count = False)
-            data += str(np.mean(np.abs(img - img_cpy))) + '\t'
-
-    data_file = open(data_file, 'a')
-    data_file.write(data + '\n')
-    data_file.close()
-
-
-def plot_upscale_data(outdir, data_path):
-
-    class GalData:
-        def __init__(self, line, name):
-            self.name = name
-            self.vec_errs = [line[i * 6 + 1: 6 * (i + 1) + 1] for i in range(10)]
-    
-    vecs = [l.rstrip().split(' ') for l in open('shifts.txt').readlines()]
-    vecs = [np.array((float(s[0]), float(s[1]))) for s in vecs]
-
-    data = genfromtxt(data_path, skip_header = 1)
-    data_str = genfromtxt(data_path, skip_header = 1, dtype = str)
-    galdata = [GalData(data[i], data_str[i][0]) for i in range(len(data))]
-    
-    x = (100, 200, 400, 600, 800, 1000)
-    
-    # plot with all galaxies all shifts
-    plt.figure()
-    for gd in galdata:
-        for ve in gd.vec_errs:
-            plt.plot(x, ve)
-
-    plt.xlabel('Upscale Factor')
-    plt.ylabel('Flux Error (Nanomaggies)')
-    plt.title('Mean Absolute Flux Error vs Upscale Factor\nAll Galaxies - All Shifts')
-    plt.savefig(os.path.join(outdir, 'flux_err_all.png'))
-
-    # plot for each galaxy, all shifts
-    for gd in galdata:
-        plt.figure()
-        for i in range(len(gd.vec_errs)):
-            plt.plot(x, gd.vec_errs[i], label = '{} | {:.2f}'.format(vecs[i], np.sqrt(vecs[i][0]**2 + vecs[i][1]**2)))
-        
-        plt.legend(title = 'Shift Vector', bbox_to_anchor = (1.05, 1), loc = 'upper left')
-        plt.xlabel('Upscale Factor')
-        plt.ylabel('Flux Error (Nanomaggies)')
-        plt.title('Mean Absolute Flux Error vs Upscale Factor\n{} - All Shifts'.format(gd.name))
-        plt.tight_layout()
-        plt.savefig(os.path.join(outdir, 'flux_err_{}_all_shifts.png'.format(gd.name)))
-
-
-    # plot for each shift, all galaxies
-    for i in range(10):
-        plt.figure()
-        for gd in galdata:
-            plt.plot(x, gd.vec_errs[i])
-
-        plt.xlabel('Upscale Factor')
-        plt.ylabel('Flux Error (Nanomaggies)')
-        plt.title('Mean Absolute Flux Error vs Upscale Factor\nAll Galaxies - Vector: {}'.format(vecs[i]))
-        plt.savefig(os.path.join(outdir, 'flux_err_all_galaxies_{}.png'.format(vecs[i])))
 
 
 def test_upscale_factor(outdir, img):
@@ -500,80 +165,180 @@ def test_upscale_factor(outdir, img):
         plt.savefig(os.path.join(outdir, 'upscale_single_shift_star_diff_{}.png'.format(vec)))
 
 
-def test_fpack_compression(outdir, img, name):
-   
-    path = os.path.join(outdir, 'temp.fits')
-    perc_diff, mean_diff, compression = [], [], []
-    values = np.arange(2, 102, 2)
-    for i in values:
-        load_gals.save_fits(img, path)
-        uncompressed_size = os.path.getsize(path)
-        subprocess.Popen(['/home/wayne/bin/bin.x86_64/fpack', '-q', str(i), '-D', '-Y', path]).wait()
-        compressed_size = os.path.getsize(path + '.fz')
-        subprocess.Popen(['/home/wayne/bin/bin.x86_64/funpack', path + '.fz']).wait()
-        compressed_img = load_gals.load_fits(path)
-        perc_diff.append(np.sum(np.abs(img - compressed_img)) / np.sum(img) * 100)
-        mean_diff.append(np.mean(np.abs(img - compressed_img)))
-        compression.append(compressed_size / float(uncompressed_size))
-        os.remove(path + '.fz')
-
-    os.remove(path)
-       
-    plt.figure()
-    plt.plot(values, perc_diff)
-    plt.title('FPack Compression Level vs. Abs Sum Difference in Flux')
-    plt.xlabel('Compression Level')
-    plt.ylabel('Total Flux Error (Percent)')
-    plt.savefig(os.path.join(outdir, 'compression_sum.png'))
-
-    plt.figure()
-    plt.plot(values, mean_diff)
-    plt.title('FPack Compression Level vs. Mean Abs Difference in Flux')
-    plt.xlabel('Compression Level')
-    plt.ylabel('Flux Error (Nanomaggies)')
-    plt.savefig(os.path.join(outdir, 'compression_mean.png'))
-
-    plt.figure()
-    plt.plot(values, compression)
-    plt.title('FPack Compression Level vs. Compression Percent')
-    plt.xlabel('Compression Level')
-    plt.ylabel('Compressed File Size (Percent of Original)')
-    plt.savefig(os.path.join(outdir, 'compression.png'))
-
-
 def test_shifts(outdir, cropped_img, img, name, random_cycles, sp_path):
-    """Runs various tests measureing flux and positional error"""
+    pass
 
-    outdir = os.path.abspath(outdir)
+
+def test_delta_error(outdir, gal, vectors):
+    """Shifts and image by delta and then determines what delta is without knowing
+       it and returns the distance between the two"""
+    
+    org = np.pad(np.copy(gal[0].data), 2, 'constant')
+    img = np.copy(org)
+    
+    p = os.path.join(outdir, 'temp.fits')
+    load_gals.save_fits(gal, p, isObj = True)
+    org_stars = []
+    for s in load_gals.get_sextractor_points(p):
+        if s.class_prob > class_prob:
+            try: org_stars.append(find_center.estimate_center(org, s))
+            except: pass
+    
+    tmp_gal = load_gals.load_fits(p, returnObj = True)
+    shifted_imgs = [np.copy(shift_gal.shift_img(img, vector, upscale_factor, check_count = False)) for vector in vectors]
+
+    gal = galaxy.Galaxy({'src': gal, 'trg': tmp_gal}, {'src': org_stars, 'trg': []}, None, 'test')
+
+    estimated_vectors = []
+    for simg in shifted_imgs:
+        tmp_gal[0].data = simg
+        gal.gal_dict.update({'trg': tmp_gal})
+        load_gals.save_fits(tmp_gal, p, isObj = True)
+        stars = [s for s in load_gals.get_sextractor_points(p) if s.class_prob > class_prob]
+        gal.stars_dict.update({'trg': stars})
+        vecs, _ = shift_gal.get_galaxy_vectors(gal, 'src', org_stars, 2)
+        estimated_vectors.append(vecs['trg'])
+    return np.array([np.sqrt((v[0] + ev[0])**2 + (v[1] + ev[1])**2) for v, ev in zip(vectors, estimated_vectors)])
+        
+
+def test_positional_error(outdir, gal, vectors):
+    """Shifts the image only once and checks the positional error"""
+   
+    print '\nRunning single shift tests...\n'
+    img = np.pad(np.copy(gal[0].data), 2, 'constant')
+    cycle_imgs = [] 
+    org = np.copy(img)
+    
+    for vector in vectors:
+        print 'Running delta = {}'.format(vector)
+        img = shift_gal.shift_img(img, vector, upscale_factor, check_count = False)
+        cycle_imgs.append(np.copy(img[2:-2, 2:-2]))
+        img = np.copy(org) 
+        
+    dist = [np.sqrt(v[0]**2 + v[1]**2) for v in vectors]
+    org_stars, star_diffs = [], []
+    p = os.path.join(outdir, str(np.random.ranf()) + 'temp.fits')
+    org = org[2:-2, 2:-2]
+    load_gals.save_fits(gal, p, isObj = True)
+     
+    for s in load_gals.get_sextractor_points(p):
+        if s.class_prob > class_prob:
+            try: org_stars.append(find_center.estimate_center(org, s))
+            except: pass
+
+    avg_num_stars = 0
     
     try:
-        if os.path.exists(outdir):
-            shutil.rmtree(outdir)
-        os.mkdir(outdir)
-    except:
-        print 'Error creating {}, testing not ran.'.format(outdir)
-        return
-    
-    #plot_upscale_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/dataCpy.csv')
+        for i in range(len(vectors)):
+            gal[0].data = cycle_imgs[i]
+            load_gals.save_fits(gal, p, isObj = True)
+            stars = []
+            for s in load_gals.get_sextractor_points(p):
+                if s.class_prob > class_prob:
+                    try: stars.append(find_center.estimate_center(cycle_imgs[i], s))
+                    except: pass
+            
+            src, trg = shift_gal.find_like_points(org_stars, stars)
+            src, trg = shift_gal.filter_stars(src, trg)
+            total_dist = [np.sqrt((s.x + vectors[i][0] - t.x)**2 + (s.y + vectors[i][1]- t.y)**2) for s, t in zip(src, trg)]
+            total_dist = np.sum(total_dist)
+            star_diffs.append(-1 if len(src) == 0 else total_dist / len(src))
+            avg_num_stars += len(src)
+            print star_diffs[-1], len(src)
+            if star_diffs[-1] == -1: return None, None
 
-    #if cropped_img.shape[0] < 107:
-    #    test_upscale_save_data(outdir, '/extra/wayne1/preserve/antholn1/ShiftGal/data.csv', cropped_img, name)
-    #test_upscale_factor(outdir, cropped_img, img)
-    
-    test_fpack_compression(outdir, img, name)
+    except load_gals.SextractorError:
+        print 'Source Extractor error, skipping....'
+        return None, None
 
-    '''
-    test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
-    test_random_shifts(outdir, np.copy(img), random_cycles, sp_path)
-    x, y = test_double_shift(outdir, np.copy(img), sp_path)
-    x2, y2 = test_single_shift(outdir, np.copy(img), sp_path)
+    finally:
+        os.remove(p)
+
+    return np.array(star_diffs), avg_num_stars / float(len(vectors))
+
+
+def test_paper_results(single = False):
+    """Testing done for the paper"""
+    global upscale_factor
     
-    plt.figure()
-    plt.plot(x, y, label = 'Double-Shift')
-    plt.plot(x2, y2, label = 'Single-Shift')
-    plt.legend()
-    plt.title('Mean Difference in Star Location')
-    plt.xlabel('Shift Distance in Pixels')
-    plt.ylabel('Mean Location Error')
-    plt.savefig(os.path.join(outdir, 'star_pos_both.png'))
+    # set up output directory
+    outdir = '../paperResults'
+    #if not os.path.exists(outdir): os.mkdir(outdir)
+    
+    # load random galaxies
+    w0 = '/extra/wayne1/preserve/antholn1/SDSS_DR12'
+    imgs, names  = [], []
+    
+    if not single:
+        '''
+        dirs = os.listdir(w0)
+        for dir in np.random.choice(dirs, 200):
+            galname = np.random.choice(os.listdir(os.path.join(w0, dir)))
+            names.append(galname)
+            imgs.append(load_gals.load_fits(os.path.join(w0, dir, galname, galname + '_i.fits.xz'), returnObj = True))
+        '''
+        with open('names.txt') as ns:
+            for n in ns:
+                n = n.rstrip()
+                p = os.path.join(w0, n[-3:], n, n + '_i.fits.xz')
+                try: 
+                    imgs.append(load_gals.load_fits(p, returnObj = True))
+                    names.append(n)
+                except: pass
+                if len(imgs) == 100: break
+    else:
+        pass
+        #imgs, names = [load_gals.load_fits('../Other/testgal/1237648703522210023/i.fits.xz', returnObj = True)], ['test']
+        #imgs, names = [load_gals.load_fits('../Other/testgal2/1237648704061636868/i.fits.xz', returnObj = True)], ['test']
+   
+    print 'Loaded', len(imgs), 'images for testing...'
+    
+    #''' 
+    # test delta error within a pixel
+    r = np.arange(0, 1.1, 0.1) 
+    vectors = np.array([(i, j) for i in r for j in r])
+    for img, name in zip(imgs, names):
+        try:
+            err = test_delta_error(outdir, img, vectors)
+            with open(os.path.join(outdir, 'delta_err.tsv'), 'a') as f:
+                f.write('\t'.join([name, '\t'.join([str(d) for d in err])]) + '\n')
+            print err
+        except: pass
+    
+    
+    #'''
     '''
+    # test flux error within a pixel
+    r = np.arange(0, 1.01, 0.01)
+    upscale_factor = 100
+    vectors = np.array([i, j] for i in r for j in r])
+    for img, name in zip(imgs, names):
+        mean, gal, bg = test_flux_error(outdir, img, vectors)
+        gal = np.array(gal)
+        with open(os.path.join(outdir, 'flux_err_px.tsv'), 'a') as f:
+            f.write('\t'.join([name, '\t'.join([str(d) for d in gal])]) + '\n')
+  
+    '''
+    '''
+    # test positional error within a pixel
+    r = np.arange(0, 1.1, 0.1)
+    upscale_factor = 10
+    vectors = np.array([(i, j) for i in r for j in r])
+    total_err = np.zeros(121)
+    
+    for img, name in zip(imgs, names):
+        err, num_stars = test_positional_error(outdir, img, vectors)
+        if err is not None:
+            err = np.array(err)
+            total_err += err
+            with open(os.path.join(outdir, 'pos_err_px.tsv'), 'a') as f:
+                f.write('\t'.join([name, '\t'.join([str(d) for d in err])]) + '\n')
+       
+    ''' 
+    for f in glob.glob('core*'):
+        try: os.remove(f)
+        except: pass
+
+    
+
+

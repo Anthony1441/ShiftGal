@@ -20,9 +20,9 @@ def estimate_center(img, star, outdir = None, color = 'no color', min_peak_value
     percent_of_img_to_explore: since the sextractor points are not very accurate a search is done around the point
         to try and find the actual maximum point.  It will explore in a square 2 * img.height * percent wide and high
     """
-    s_size = 2
-    if star.x < s_size or star.x > img.shape[1] - s_size or star.y < s_size or star.y > img.shape[0] - s_size:
-        raise CurveFitError('Star located at {} is too close to the edge of the image'.format(str(star)))
+    s_size = 7
+    #if star.x < s_size or star.x > img.shape[1] - s_size or star.y < s_size or star.y > img.shape[0] - s_size:
+    #   raise CurveFitError('Star located at {} is too close to the edge of the image'.format(str(star)))
 
     point = (int(star.x), int(star.y))
     h, w = img.shape
@@ -51,7 +51,6 @@ def estimate_center(img, star, outdir = None, color = 'no color', min_peak_value
     xs_min = max(0, max_pt[0] - s_size)
     xs_max = min(w, max_pt[0] + s_size)
     
-    # fit a Moffat curve to te star
     centered_img = img[ys_min : ys_max, xs_min : xs_max]
     
     x = '['
@@ -71,28 +70,23 @@ def estimate_center(img, star, outdir = None, color = 'no color', min_peak_value
     params = '[{}, {}, {}, 1.0, 1.0]'.format(str(centered_img[max_pt]), str(max_pt[1]), str(max_pt[0]))
     lb = '[0.0, {}, {}, 0.0, 0.0]'.format(str(max_pt[1] - np.sqrt(2)), str(max_pt[0] - np.sqrt(2)))
     ub = '[1000.0, {}, {}, 100.0, 100.0]'.format(str(max_pt[1] + np.sqrt(2)), str(max_pt[0] + np.sqrt(2)))
-
     proc = subprocess.Popen(['./CurveFit/runFit', x, y, params, lb, ub], stdout = subprocess.PIPE)
+    #proc = subprocess.Popen(['./CurveFit/runFit', x, y, '[5, 5, 1, 1, 100]'], stdout = subprocess.PIPE)
     
-    timeout = 10
+    timeout = 2
     while proc.poll() is None:
         time.sleep(1)
         timeout -= 1
         if timeout == 0:
-            print 'TIMEOUT'
             proc.terminate()
             raise CurveFitError('Ran out of time fiting star at {}'.format(point))
         
     out, err = proc.communicate()
-
+    
     if proc.wait() != 0:
         raise CurveFitError('Error fitting curve to star at {}'.format(point))
-
     p = np.array(out.rstrip().split(' ')).astype(float)
-
-    f = functional_models.Moffat2D(amplitude = p[0], x_0 = p[1], y_0 = p[2], gamma = p[3], alpha = p[4])
-
-    
+    f = functional_models.Moffat2D(amplitude = p[0], x_0 = p[1] + xs_min, y_0 = p[2] + ys_min, gamma = p[3], alpha = p[4])
     '''
     if outdir is not None and point[0] == 177:
         
@@ -140,5 +134,4 @@ def estimate_center(img, star, outdir = None, color = 'no color', min_peak_value
         plt.imsave(os.path.join(outdir, 'star_upscale.png'), upscale, origin = 'lower', cmap = 'gray')
         plt.imsave(os.path.join(outdir, 'star.png'), upscaled, origin = 'lower', cmap = 'gray')
     '''
-
-    return Star(f.x_0 + xs_min, f.y_0 + ys_min, gamma = f.gamma.value, alpha = f.alpha.value, class_prob = star.class_prob)
+    return Star(f.x_0.value, f.y_0.value, gamma = f.gamma.value, alpha = f.alpha.value, class_prob = star.class_prob)

@@ -22,6 +22,7 @@ void gaussian(const real_1d_array& c, const real_1d_array& x, double& func, void
     c[4] = alpha
     */
     func = c[0] * pow(1.0 + ((pow(x[0] - c[1], 2) + pow(x[1] - c[2], 2)) / pow(c[3], 2)), -1.0 * c[4]);
+    //func = c[4] * exp(-1 * pow(((x[0] - c[0]) / c[2]), 2) - pow(((x[1] - c[1]) / c[3]), 2));
 }
 
 
@@ -29,6 +30,7 @@ int main(int argc, char* argv[])
 {
     
 	if (argc != 6) return -1;
+    //if (argc != 4) return -1;
 
 	try
     {
@@ -39,7 +41,10 @@ int main(int argc, char* argv[])
         // bounds for each parameter
         real_1d_array boundLower = argv[4];
         real_1d_array boundUpper= argv[5];
-    
+        
+        //real_1d_array boundUpper = "[10.0, 10.0, 100.0, 100.0, 10000.0]";
+        //real_1d_array boundLower = "[0.0, 0.0, 0.0, 0.0, 0.0]";
+        
         double epsx = 0.000001;
         ae_int_t maxits = 0;
         ae_int_t info;
@@ -55,6 +60,7 @@ int main(int argc, char* argv[])
    
         // output is read by python script
         std::cout << c[0] << " " << c[1] << " " << c[2] << " " << c[3] << " " << c[4]  << std::endl;
+        //std::cout << c[0] << " " << c[1] << " " << c[2] << " " << c[3] << std::endl;
     
     }
     catch (...)

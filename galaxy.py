@@ -28,8 +28,9 @@ class Galaxy:
             self.stars_dict.update({color: [s for s in stars_dict[color] if s.class_prob >= star_class_perc]})
 
         self.name = name
-        self.width = self.gal_dict['g'][0].data.shape[1]
-        self.height = self.gal_dict['g'][0].data.shape[0]
+        if 'g' in self.gal_dict.keys():
+            self.width = self.gal_dict['g'][0].data.shape[1]
+            self.height = self.gal_dict['g'][0].data.shape[0]
         self.num_wb = len(self.gal_dict)
 
     def images(self, color = None):
