@@ -32,7 +32,8 @@ class Galaxy:
             self.width = self.gal_dict['g'][0].data.shape[1]
             self.height = self.gal_dict['g'][0].data.shape[0]
         self.num_wb = len(self.gal_dict)
-
+        
+    
     def images(self, color = None):
         if color is None:
             return [(color, img[0].data) for color, img in self.gal_dict.iteritems()]

@@ -272,13 +272,14 @@ def test_paper_results(single = False):
     if not single:
         '''
         dirs = os.listdir(w0)
-        for dir in np.random.choice(dirs, 200):
+        for dir in np.random.choice(dirs, 100):
             galname = np.random.choice(os.listdir(os.path.join(w0, dir)))
             names.append(galname)
             imgs.append(load_gals.load_fits(os.path.join(w0, dir, galname, galname + '_i.fits.xz'), returnObj = True))
         '''
+        #'''
         with open('names.txt') as ns:
-            for n in ns:
+            for n in ns.readlines()[3900:]:
                 n = n.rstrip()
                 p = os.path.join(w0, n[-3:], n, n + '_i.fits.xz')
                 try: 
@@ -286,6 +287,7 @@ def test_paper_results(single = False):
                     names.append(n)
                 except: pass
                 if len(imgs) == 100: break
+        #'''
     else:
         pass
         #imgs, names = [load_gals.load_fits('../Other/testgal/1237648703522210023/i.fits.xz', returnObj = True)], ['test']

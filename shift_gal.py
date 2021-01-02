@@ -49,7 +49,6 @@ def filter_stars(src, trg, min_gamma = 1, max_gamma = 10, max_dist = np.sqrt(2))
     for i in range(len(src)):
         dist = np.sqrt((src[i].x - trg[i].x)**2 + (src[i].y - trg[i].y)**2)
         if dist > max_dist: continue
-        if trg[i].gamma < min_gamma or trg[i].gamma > max_gamma: continue
         
         m_src.append(src[i])
         m_trg.append(trg[i])
@@ -85,12 +84,12 @@ def average_vector(m_src, m_trg, maxsigma = 2):
        It excludes points outside of maxsigma * std_dev of the mean."""
     # calculate the vector bettween each star and its source star
     vecs = np.array(m_src) - np.array(m_trg)
-    return np.mean(vecs, axis = 0)
+    if len(vecs) < 3: return np.mean(vecs, axis = 0)
+    mu, dev = np.mean(vecs, axis = 0), maxsigma * np.std(vecs, axis = 0)
     # only vectors that are within one sigma on either side of the mean
     avg = np.mean([v for v in vecs if abs(v[0] - mu[0]) < dev[0] and abs(v[1] - mu[1]) < dev[1]], axis = 0)
     # if there are no points in that range, then the stars don't agree enough for the shift to be trusted
     if np.any(np.isnan(avg)): 
-        print vecs, mu, dev
         raise StarsNotWithinSigmaError
     return avg
 
@@ -141,95 +140,73 @@ def tsv_print(*args):
     tsv_out.write('\t'.join([' ' if arg is None else str(arg) for arg in args]) + '\n')
 
 
-def find_template_gal_and_stars(galaxy, min_stars_template, outdir = '.', save_star_figs = False):
+def fit_all_stars(galaxy):
+    """Fits a curve to all stars in all colorbands, modifies the galaxy stars"""
+    fit_stars_dict = OrderedDict()
+    for color, img, stars in galaxy.gen_img_star_pairs():
+        # try to calculate to subpixel accuracy the center of each star
+        fit_stars = []
+        for star in stars:
+            try: fit_stars.append(find_center.estimate_center(img, star))
+            except find_center.CurveFitError: pass
+        fit_stars_dict.update({color: fit_stars})
+    # replace the galaxy stars with the fit ones
+    galaxy.stars_dict = fit_stars_dict
+
+
+def find_template_gal_and_stars(galaxy, min_stars_template):
     """Determines which galaxy (if any) should be the template galaxy that 
        all others are shifted to.  Returns the color chosen and the fitted stars."""
-    
     # finds the color of the galaxy with the most stars
     template_color = sorted(galaxy.stars_dict.items(), key = lambda x: len(x[1]))[-1][0]
-        
+
     # if there aren't enough stars in the template galaxy then raise error
     if len(galaxy.stars(template_color)) < min_stars_template: raise NoViableTemplateError
-
-    # calculate the center points for the refernce galaxy
-    ref_gal, ref_stars = galaxy.images(template_color), []
-   
-    if save_star_figs:
-        outdir = os.path.join(outdir, 'star_figs')
     
-    if os.path.exists(outdir): 
-        shutil.rmtree(outdir)
-    
-    os.mkdir(outdir)
+    return template_color       
 
-    for star in galaxy.stars(template_color): 
-        try:
-            if save_star_figs:
-                fit_star = find_center.estimate_center(ref_gal, star, outdir, template_color)
-            else:
-                fit_star = find_center.estimate_center(ref_gal, star)
 
-            ref_stars.append(fit_star)
-
-        except find_center.CurveFitError, e:
-            print e.message
-
-    ref_stars = filter_stars(ref_stars, ref_stars)[0]
-    return template_color, ref_stars
-        
-
-def get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all):
+def get_galaxy_vectors(galaxy, template_color, min_stars_all):
     """Returns a list of 5 vectors representing the shift needed to align each to
        the template, if None then the a vector could not be found for the galaxy.""" 
-    color_vectors, stars_dict = OrderedDict(), OrderedDict()
+    
+    color_vectors = OrderedDict()
 
     for color, img, stars in galaxy.gen_img_star_pairs():
+        
         # only find matching stars if it is not the template galaxy
         if color == template_color:
             color_vectors.update({color: np.array((0, 0))})
-            stars_dict.update({color: template_stars}) 
-        else:
-            m_src, m_trg = find_like_points(template_stars, stars)
+
+        # otherwise filter out stars and find the average vector between them
+        else: 
+            # find stars that are near eachother in both images 
+            m_src, m_trg = find_like_points(galaxy.stars_dict[template_color], stars)
             
             # if not enough points in it match the template, skip it
             if len(m_src) < min_stars_all:
-                print('Skipping waveband {} it does not have enough viable stars to use for realignment ({} stars)'.format(color, len(m_src)))
+                print('Skipping waveband {}, could not match enough stars for realignment ({} stars)'.format(color, len(m_src)))
                 color_vectors.update({color: None})
-                stars_dict.update({color: None})
-                continue
+                continue 
+            
+            # filter out stars based on thier model parameters
+            m_src, m_trg = filter_stars(m_src, m_trg)
 
-            fit_src, fit_stars = [], []
-            
-            # try to calculate to subpixel accuracy the center of each star
-            for star in m_src:
-                try:
-                    fit_star = find_center.estimate_center(img, star)
-                    fit_stars.append(fit_star)
-                    fit_src.append(star)
-            
-                except find_center.CurveFitError:
-                    pass
-
-            fit_src, fit_stars = filter_stars(fit_src, fit_stars)
-            
             # if less than the min stars were fit then skip this waveband
-            if len(fit_stars) < min_stars_all:
-                print('Skipping waveband {}, not enough stars could be fit ({} stars)'.format(color, len(fit_stars)))
+            if len(m_src) < min_stars_all:
+                print('Skipping waveband {}, filtered out too many stars ({} stars)'.format(color, len(m_src)))
                 color_vectors.update({color: None})
-                stars_dict.update({color: None})
                 continue
-
+            
             # calculate the average vector from the reference image and this image
             try:
-                color_vectors.update({color: average_vector(fit_src, fit_stars)})
-                stars_dict.update({color: fit_stars})
+                color_vectors.update({color: average_vector(m_src, m_trg)})
             except StarsNotWithinSigmaError:
-                print('Skipping waveband {}, stars disagree too much.'.format(color))
+                print('Skipping waveband {}, vector between stars disagree too much.'.format(color))
                 color_vectors.update({color: None})
-                stars_dict.update({color: None})
                 continue
 
-    return color_vectors, stars_dict
+    return color_vectors
 
 
 def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor, run_in_parallel, max_memory):
@@ -292,7 +269,7 @@ def save_output(outdir, galaxy, shifted_imgs, shift_vectors, save_type, compress
                     os.system('xz -9 -e {}'.format(os.path.join(outdir, f)))
 
 
-def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, min_wavebands, upscale_factor, crop_images, run_in_parallel, max_memory, compressOutput):
+def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, min_stars_all, upscale_factor, crop_images, run_in_parallel, max_memory, compressOutput):
 
     try:
         # set up output directory 
@@ -303,17 +280,15 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         
         print('--- Processing galaxy {} ---'.format(galaxy.name))
 
-        template_color, template_stars = find_template_gal_and_stars(galaxy, min_stars_template, p)
+        print 'Fitting models to all stars found...'
+        fit_all_stars(galaxy)
+        template_color = find_template_gal_and_stars(galaxy, min_stars_template)
         template_cpy = np.copy(galaxy.images(template_color))
        
-        print('Reference waveband chosen is {} with {} stars'.format(template_color, len(template_stars))) 
+        print('Reference waveband chosen is {} with {} stars'.format(template_color, len(galaxy.stars_dict[template_color]))) 
         
-        shift_vectors, stars = get_galaxy_vectors(galaxy, template_color, template_stars, min_stars_all)
-
-        # check that enough wavebands will be outputted to bother saving (by default ALL will be saved, even if just 1 waveband is viable)
-        num_viable = len([1 for v in shift_vectors.values() if v is not None])
-        if num_viable < min_wavebands: raise NotEnoughViableWavebandsError
-        
+        shift_vectors = get_galaxy_vectors(galaxy, template_color, min_stars_all)
+       
         # crop the images to be only the galaxy
         if crop_images:
             left, right, top, bottom = galaxy.crop_images_to_galaxy()
@@ -351,6 +326,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
 
         # save output images and info
         save_output(p, galaxy, shift_imgs, shift_vectors, save_type, compressOutput)
+        stars = galaxy.stars_dict
         tsv_print(str(galaxy.name), min_stars_template, min_stars_all, upscale_factor, template_color,
                   print_vec(shift_vectors['g']), print_vec(shift_vectors['i']), print_vec(shift_vectors['r']), print_vec(shift_vectors['u']), print_vec(shift_vectors['z']),
                   len_stars(stars['g']), len_stars(stars['i']), len_stars(stars['r']), len_stars(stars['u']), len_stars(stars['z']),
@@ -382,7 +358,7 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         except: pass
 
     # if any other unknown error appears, clean up then exit
-    except Exception as e:
+    except NoError:
         print 'Other exception encountered {}, skipping galaxy'.format(e)
         try: shutil.rmtree(p)
         except: pass
@@ -395,27 +371,27 @@ def process_galaxy(galaxy, out_dir, border_size, save_type, min_stars_template, 
         except: pass
    
    
-if __name__ == '__main__':
-    
-    #testing.test_paper_results()
-    #exit(1)
-    
+if __name__ == '__main__': 
     # get all of the arguments / option
     parser = argparse.ArgumentParser()
-    parser.add_argument('inDir', help = 'A directory containing the input galaxies, see -in_format for how this should be structured.')
+    parser.add_argument('inDir', help = 'A directory containing the input galaxies.  Expects the directory to contain a directory for each galaxy and for each of those to contain 5 images following the name_color.fits convention.')
     parser.add_argument('outDir', help = 'A directory for the output images.  If it does not exist then it will be created, if it already exists then all files in it will be deleted.')
     parser.add_argument('-saveType', default = 'fits', choices = ['fits', 'png', 'both'], help = 'The output file type of the shifted images, either "fits", "png", or "both".  Default is fits.  WARNING png images are manipulated to display correctly, but should only be used for visual purposes.')
     parser.add_argument('-compressOutput', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then the output fits images are compressed using xz -9 -e.') 
-    parser.add_argument('-starClassPerc', default = 0.65, type = float, help = 'The minimum probablity confidence needed of the sextractor classification that the object is a star.  Value should be in range (0,1), default is 0.7.')
+    parser.add_argument('-starClassPerc', default = 0.7, type = float, help = 'The minimum probability confidence needed of the sextractor classification that the object is a star.  Value should be in range (0,1), default is 0.7.')
     parser.add_argument('-cropImages', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'If true then the input images will be cropped to only the galaxy using Source Extractor.')
     parser.add_argument('-borderSize', default = 0.01, type = float, help = 'Controls size of the border (as a percentage of image height) added to the image to allow room for shifting.')
     parser.add_argument('-minStarsTemplate', default = 3, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
-    parser.add_argument('-minStarsAll', default = 1, type = int, help = 'The minimum number of stars needed in all waveabnds of the galaxy for a shift to be attempted.  Any wavebands that do not satisfy this property are ignored.  Default is 2.')
-    parser.add_argument('-minWavebands', default = 0, type = int, help = 'The minimum viable wavebands needed for the output to be saved, if <= 0 then any amount will be saved.')
+    parser.add_argument('-minStarsAll', default = 1, type = int, help = 'The minimum number of stars needed in all color-bands of the galaxy for a shift to be attempted.  Any color-bands that do not satisfy this property are ignored.  Default is 2.')
     parser.add_argument('-upscaleFactor', default = 100, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation prior to shifting.')
     parser.add_argument('-runInParallel', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Will process wavebands in parallel, this requires the system to have enough memory to store all upscaled wavebands simultaneously.')
     mem = virtual_memory().total / 1024.0**3
-    parser.add_argument('-maxMemory', default = mem, type = float, help = 'The maxmimum amount of memory (in GB) the process can use.  At least 16GB is recommended but more will be needed for larger images and larger upscale factors.')
+    parser.add_argument('-maxMemory', default = mem, type = float, help = 'The maximum amount of memory (in GB) the process can use.  At least 16GB is recommended but more will be needed for larger images and larger upscale factors.')
+    
+    if len(sys.argv) == 1:
+        parser.print_help()
+        exit(1)
+
     args = parser.parse_args() 
     
     # check that the in directory exists and follows the format required
@@ -463,18 +439,13 @@ if __name__ == '__main__':
     'g_star_info', 'i_star_info', 'r_star_info', 'u_star_info', 'z_star_info')
 
 
-    for gal in load_gals.load_galaxies(args.inDir, args.starClassPerc):
+    for gal in load_gals.load_galaxies(args.inDir, args.starClassPerc, args.outDir):
         
         if type(gal) == str: 
             print 'Failed to load {}'.format(gal)
             continue
-
-        # skips galaxies already processed
-        if gal.name in os.listdir(args.outDir):
-            print 'Skipping {}, galaxy already exists in output directory'.format(gal.name)
-            continue
         
-        process_galaxy(gal, args.outDir, args.borderSize, args.saveType, args.minStarsTemplate, args.minStarsAll, args.minWavebands, args.upscaleFactor, args.cropImages, args.runInParallel, args.maxMemory * 1024**3, args.compressOutput)
+        process_galaxy(gal, args.outDir, args.borderSize, args.saveType, args.minStarsTemplate, args.minStarsAll, args.upscaleFactor, args.cropImages, args.runInParallel, args.maxMemory * 1024**3, args.compressOutput)
         print ''
 
     tsv_out.close()
