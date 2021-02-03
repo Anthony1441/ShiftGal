@@ -120,7 +120,7 @@ def shift_img(gal, vector, upscale_factor, gal_dict = dict(), color = 'NoColor',
 
     input_count, current_count = np.sum(gal), np.sum(upscale)
     # check to make sure that the output photon count is within 0.05% of the original
-    err_perc = 0.005
+    err_perc = 0.05
     if check_count and (current_count > input_count + input_count * err_perc or current_count < input_count - input_count * err_perc):
         raise FluxNotPreservedError
  
@@ -225,6 +225,7 @@ def shift_wavebands(galaxy, shift_vectors, template_color, upscale_factor, run_i
     
     else:
         needed_memory = galaxy.width * galaxy.height * upscale_factor**2 * 8
+        print galaxy.width, galaxy.images('g').shape
         if needed_memory > max_memory:
             raise NotEnoughMemoryError(needed_memory)
 
@@ -384,7 +385,7 @@ if __name__ == '__main__':
     parser.add_argument('-minStarsTemplate', default = 3, type = int, help = 'The minimum number of stars needed in the template galaxy (the one that the other wavebands will shifted to match) for a shift to be attempted.  Default is 5')
     parser.add_argument('-minStarsAll', default = 1, type = int, help = 'The minimum number of stars needed in all color-bands of the galaxy for a shift to be attempted.  Any color-bands that do not satisfy this property are ignored.  Default is 2.')
     parser.add_argument('-upscaleFactor', default = 100, type = int, help = 'The amount that each image is upscaled using Lanczos interpolation prior to shifting.')
-    parser.add_argument('-runInParallel', default = '1', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Will process wavebands in parallel, this requires the system to have enough memory to store all upscaled wavebands simultaneously.')
+    parser.add_argument('-runInParallel', default = '0', choices = ['True', 'true', '1', 'False', 'false', '0'], help = 'Will process wavebands in parallel, this requires the system to have enough memory to store all upscaled wavebands simultaneously.')
     mem = virtual_memory().total / 1024.0**3
     parser.add_argument('-maxMemory', default = mem, type = float, help = 'The maximum amount of memory (in GB) the process can use.  At least 16GB is recommended but more will be needed for larger images and larger upscale factors.')
     
